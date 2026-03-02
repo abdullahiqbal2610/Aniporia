@@ -16,9 +16,16 @@ class IngestionEngine:
             self.detector = easyocr.Reader(['en'], gpu=False)
             
             # 2. The Custom Handwriting Translator (Pulled straight from HF Hub!)
+
+            #our own fine-tuned model trained on 1000+ samples of messy handwriting( for ai project)
+
             #custom_model_path = "abdullahiqbal2610/Aniporia-TrOCR"
             # self.processor = TrOCRProcessor.from_pretrained(custom_model_path)
             # self.recognizer = VisionEncoderDecoderModel.from_pretrained(custom_model_path)
+
+
+            #for better results, we will use the base trocr model which is not fine-tuned but still performs decently on handwritten text( for se project))
+
             self.processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
             self.recognizer = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-handwritten")
             print("✅ Engines Loaded Successfully!")
