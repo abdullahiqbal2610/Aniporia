@@ -1,0 +1,22 @@
+# =========================
+# ANIPORIA MASTER .GITIGNORE
+# =========================
+
+# --- AI Engine & Backend (Python) ---
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+.env
+.cache/
+
+# --- Frontend (JavaScript/Node.js) ---
+node_modules/
+dist/
+build/
+.npm/
+
+# --- OS Generated Files ---
+.DS_Store
+Thumbs.db
