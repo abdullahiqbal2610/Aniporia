@@ -1,6 +1,8 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms as transforms
 
 # --- THE MATH CLASSES ---
 class ConditionalBatchNorm2d(nn.Module):
@@ -53,6 +55,29 @@ def run_architectural_proof(tau, theta):
     
     # 2. Forward Pass
     generated_images = generator(dummy_text, style_vector)
+    
+    # =================================================================
+    # 📸 NEW: EXPORT THE RAW MATH TENSOR TO A REAL IMAGE
+    # =================================================================
+    # Create the subfolder if it doesn't exist
+    output_dir = "generated_proofs"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Grab the very first generated image from the batch
+    raw_tensor = generated_images[0] 
+
+    # "De-normalize" the math: Convert the [-1 to 1] range into [0 to 1]
+    normalized_tensor = (raw_tensor + 1.0) / 2.0
+
+    # Convert the PyTorch math tensor into an actual Image object
+    to_pil = transforms.ToPILImage()
+    final_image = to_pil(normalized_tensor)
+
+    # Save it to the subfolder dynamically named by its style inputs
+    save_path = os.path.join(output_dir, f"proof_tau{tau:.2f}_theta{theta:.2f}.png")
+    final_image.save(save_path)
+    print(f"   [🔬 AI LAB] 📸 Saved generated proof image -> {save_path}")
+    # =================================================================
     
     # 3. Quality & Loss Math
     q_blank = (generated_images.abs().mean() > 0.01).float() 
