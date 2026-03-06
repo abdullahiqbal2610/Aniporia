@@ -1,22 +1,42 @@
-# =========================
-# ANIPORIA MASTER .GITIGNORE
-# =========================
+# ==========================================
+# 🛑 SECURITY: NEVER PUSH THESE
+# ==========================================
+.env
+.env.*
+*.pem
+secrets.json
 
-# --- AI Engine & Backend (Python) ---
+# ==========================================
+# 🐍 PYTHON & AI ENGINE (Backend)
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
 venv/
 .venv/
 env/
-__pycache__/
-*.pyc
-.env
-.cache/
+.env_python/
+.ipynb_checkpoints/
+*.pt
+*.pth
+temp_*
+generated_proofs/
 
-# --- Frontend (JavaScript/Node.js) ---
+# ==========================================
+# ⚛️ FRONTEND (React / Vue / Node.js)
+# ==========================================
 node_modules/
 dist/
 build/
 .npm/
+.next/
+*.log
 
-# --- OS Generated Files ---
+# ==========================================
+# 💻 OS & EDITOR JUNK FILES
+# ==========================================
 .DS_Store
+__MACOSX/
+.vscode/
+.idea/
 Thumbs.db
