@@ -39,6 +39,21 @@ class CourseResponse(BaseModel):
     created_at: str
 
 
+# ---------- Helper ----------
+
+def ensure_profile_exists(supabase, user_id: str):
+    """
+    Guarantees a profile row exists for this user before any FK-dependent insert.
+    Uses upsert so it's a no-op if the profile already exists.
+    This handles existing Supabase Auth users who skipped the onboarding flow.
+    """
+    supabase.table("profiles").upsert(
+        {"id": user_id},
+        on_conflict="id",
+        ignore_duplicates=True,   # don't overwrite existing profile data
+    ).execute()
+
+
 # ---------- Routes ----------
 
 @router.get("/", response_model=list[CourseResponse])
@@ -61,6 +76,10 @@ async def list_courses(user=Depends(get_current_user)):
 async def create_course(body: CourseCreate, user=Depends(get_current_user)):
     """Creates a new course for the authenticated user."""
     supabase = get_supabase()
+
+    # Ensure a profile row exists — prevents FK violation for users who
+    # authenticated directly without completing the onboarding profile step.
+    ensure_profile_exists(supabase, user.id)
 
     result = (
         supabase.table("courses")
@@ -91,7 +110,6 @@ async def update_course(
     """Updates fields on an existing course. Only the owner can update."""
     supabase = get_supabase()
 
-    # Verify ownership
     existing = (
         supabase.table("courses")
         .select("id")
