@@ -1,8 +1,9 @@
 """
 Profiles Router
 ---------------
-POST /profiles       → Create or update a user profile (called after signup)
-GET  /profiles/me    → Get the current user's profile
+POST   /profiles/     → Create or update a user profile (onboarding)
+GET    /profiles/me   → Get the current user's profile
+DELETE /profiles/me   → Permanently delete the account + all data
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -39,35 +40,22 @@ async def create_or_update_profile(
     body: ProfileCreate,
     user=Depends(get_current_user),
 ):
-    """
-    Called after Supabase Auth signup to save the onboarding form data.
-    Uses upsert so it also works as an update if the profile already exists.
-    """
     supabase = get_supabase()
-
-    data = {
-        "id": user.id,
-        **body.model_dump(),
-    }
 
     result = (
         supabase.table("profiles")
-        .upsert(data, on_conflict="id")
+        .upsert({"id": user.id, **body.model_dump()}, on_conflict="id")
         .execute()
     )
 
     if not result.data:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to save profile.",
-        )
+        raise HTTPException(status_code=500, detail="Failed to save profile.")
 
     return result.data[0]
 
 
 @router.get("/me", response_model=ProfileResponse)
 async def get_my_profile(user=Depends(get_current_user)):
-    """Returns the authenticated user's profile."""
     supabase = get_supabase()
 
     result = (
@@ -79,9 +67,47 @@ async def get_my_profile(user=Depends(get_current_user)):
     )
 
     if not result.data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found. Complete onboarding first.",
-        )
+        raise HTTPException(status_code=404, detail="Profile not found.")
 
     return result.data
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_account(user=Depends(get_current_user)):
+    """
+    Permanently deletes the authenticated user's account.
+
+    Order of operations:
+      1. Delete all DB rows (gaps, uploads, courses, profile) — cascade handles
+         most of this if FK ON DELETE CASCADE is set, but we do it explicitly
+         to be safe and avoid FK constraint errors.
+      2. Delete the auth.users row via the admin API (requires service role key).
+
+    The service role client already has admin privileges — no extra setup needed.
+    """
+    supabase = get_supabase()
+    uid = user.id
+
+    try:
+        # 1. Delete user data in dependency order
+        #    (If your FK constraints use CASCADE this is redundant but harmless)
+        supabase.table("gaps").delete().eq("user_id", uid).execute()
+        supabase.table("uploads").delete().eq("user_id", uid).execute()
+
+        # Fetch session IDs first, then delete results (no subquery support in client)
+        sessions = supabase.table("practice_sessions").select("id").eq("user_id", uid).execute()
+        session_ids = [s["id"] for s in (sessions.data or [])]
+        if session_ids:
+            supabase.table("practice_results").delete().in_("session_id", session_ids).execute()
+        supabase.table("practice_sessions").delete().eq("user_id", uid).execute()
+        supabase.table("courses").delete().eq("user_id", uid).execute()
+        supabase.table("profiles").delete().eq("id", uid).execute()
+
+        # 2. Delete from auth.users (admin-only operation)
+        supabase.auth.admin.delete_user(uid)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete account: {str(e)}",
+        )
