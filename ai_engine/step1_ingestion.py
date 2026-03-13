@@ -3,6 +3,7 @@ import cv2
 import math
 import numpy as np
 import easyocr
+import fitz  # PyMuPDF for lightning-fast digital PDF extraction
 from PIL import Image
 from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 # Import your custom AI Engine module
@@ -12,10 +13,9 @@ warnings.filterwarnings("ignore")
 
 # =================================================================
 # 🎚️ THE MASTER TOGGLE SWITCH
-# Change this variable to switch the entire brain of the application.
 # Options: "AI" (Custom Model + Math) or "SE" (Stable Microsoft Model)
 # =================================================================
-PROJECT_MODE = "AI"  # Change to "AI" for research mode, "SE" for production mode
+PROJECT_MODE = "SE"  
 
 
 class IngestionEngine:
@@ -86,28 +86,64 @@ class IngestionEngine:
         print(f"📊 [StyleScript Math] Phase 1 Extracted -> Thickness (τ): {tau:.2f}, Slant (θ): {theta:.2f}°")
         return tau, theta
 
-
-    def extract_text(self, image_path):
+    # ---------------------------------------------------------
+    # 🚦 THE SMART ROUTER (Decides PDF vs. Image)
+    # ---------------------------------------------------------
+    def extract_text(self, file_path):
         if self.use_mock:
             return "Dynamic Programming is an optimization technique."
 
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Missing image at: {image_path}")
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Missing file at: {file_path}")
 
-        print(f"\n🔍 Analyzing layout of {image_path}...")
+        file_ext = file_path.lower().split('.')[-1]
+
+        # ROUTE 1: Digital PDF (Fast Extraction)
+        if file_ext == 'pdf':
+            return self._extract_from_digital_pdf(file_path)
+            
+        # ROUTE 2: Image (AI Pipeline)
+        elif file_ext in ['png', 'jpg', 'jpeg']:
+            return self._extract_from_image(file_path)
+            
+        else:
+            raise ValueError("Unsupported format! Please upload a PDF, PNG, JPG, or JPEG.")
+
+    # ---------------------------------------------------------
+    # ⚡ ROUTE 1: DIGITAL PDF PARSER (Milliseconds)
+    # ---------------------------------------------------------
+    def _extract_from_digital_pdf(self, file_path):
+        print(f"\n📄 [Fast Route] Digital PDF detected! Ripping text from {file_path}...")
+        extracted_pages = []
+        
+        try:
+            doc = fitz.open(file_path)
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                text = page.get_text()
+                if text.strip():
+                    extracted_pages.append(text.strip())
+            
+            print(f"✅ Extracted {len(extracted_pages)} pages instantly.")
+            return "\n\n".join(extracted_pages)
+            
+        except Exception as e:
+            print(f"❌ PDF Extraction Failed: {e}")
+            return ""
+
+    # ---------------------------------------------------------
+    # 🧠 ROUTE 2: IMAGE AI PIPELINE (Heavy GPU)
+    # ---------------------------------------------------------
+    def _extract_from_image(self, image_path):
+        print(f"\n🖼️ [AI Route] Image detected! Analyzing layout of {image_path}...")
         cv_img = cv2.imread(image_path)
         
-        #--------------------------------------------------
-        # 🧮 RUN MATH ONLY IF IN AI MODE
-        # --------------------------------------------------
+        # 1. RUN MATH ONLY IF IN AI MODE
         if PROJECT_MODE == "AI":
-            # 1. Extract the physical math from the image (Phase 1)
             tau, theta = self.extract_style_features(cv_img)
-            
-            # 2. AUTONOMOUS HANDOFF: Send it directly to the PyTorch AI Engine
             run_architectural_proof(tau, theta)
         
-        # 1. EasyOCR for bounding boxes
+        # 2. EasyOCR for bounding boxes
         results = self.detector.readtext(image_path)
         boxes = []
         for (bbox, text, prob) in results:
@@ -117,7 +153,7 @@ class IngestionEngine:
             y_max = int(max([pt[1] for pt in bbox]))
             boxes.append((x_min, y_min, x_max, y_max))
             
-        # 2. Sort and group lines
+        # 3. Sort and group lines
         boxes = sorted(boxes, key=lambda x: x[1])
         lines = []
         current_line = []
@@ -133,7 +169,7 @@ class IngestionEngine:
         if current_line:
             lines.append(current_line)
             
-        # 3. Master bounding boxes
+        # 4. Master bounding boxes
         master_boxes = []
         for line in lines:
             master_x_min = min([b[0] for b in line])
@@ -145,7 +181,7 @@ class IngestionEngine:
         extracted_lines = []
         print(f"✂️ Grouped into {len(master_boxes)} master lines. Passing to OCR Engine...")
         
-        # 4. TrOCR Inference
+        # 5. TrOCR Inference
         for (x1, y1, x2, y2) in master_boxes:
             pad = 5
             line_crop = cv_img[max(0, y1-pad):y2+pad, max(0, x1-pad):x2+pad]
@@ -170,10 +206,11 @@ class IngestionEngine:
 if __name__ == "__main__":
     engine = IngestionEngine(use_mock=False)
     
-    image_to_test = "test_data/test_note4.png" 
+    # 🚨 CHANGE THIS TO TEST YOUR PDF OR IMAGE
+    file_to_test = "test_data/test_note8.png"  # Digital PDF (Fast Route)
     
     try:
-        result = engine.extract_text(image_to_test)
+        result = engine.extract_text(file_to_test)
         print("\n📝 --- EXTRACTED TEXT ---")
         print(result)
         print("--------------------------\n")

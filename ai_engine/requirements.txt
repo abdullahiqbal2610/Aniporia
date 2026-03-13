@@ -2,11 +2,16 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Core AI & Math Libraries
-torch==2.6.0
-torchvision==0.21.0
-transformers==4.49.0
+torch
+torchvision
+transformers
 pillow==11.1.0
 sentence-transformers==3.4.1
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# Fast PDF Text Extraction (The Digital Router)
+pymupdf>=1.23.0
 
 # Optical Character Recognition (The Eyes)
 easyocr==1.7.2
