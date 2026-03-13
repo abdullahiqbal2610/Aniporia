@@ -67,20 +67,25 @@ class AcademicTutorEngine:
         "{student_notes}"
         
         TASK:
-        Check if each item in the SYLLABUS is adequately explained or covered in the STUDENT NOTES.
+        Evaluate how well the student covered each syllabus item in their notes.
         
         RULES:
-        1. Be generous: if the core concept is explained, mark it as covered.
-        2. "Definition of X" is covered if X is explained, even if the word "definition" isn't used.
-        3. You must respond ONLY with a valid JSON object matching the exact structure below.
+        1. "Definition of X" is covered if X is explained.
+        2. Assign a 'confidence_score' from 0 to 100 indicating how well they understand the topic based ONLY on their notes.
+            - 0-39: Missing or completely wrong (Status: "missing")
+            - 40-79: Partially covered, missing key details (Status: "partial")
+            - 80-100: Fully covered and correct (Status: "covered")
+        3. Respond ONLY with a valid JSON array.
         
         EXPECTED JSON FORMAT:
         {{
-            "covered_topics": [
-                {{"topic": "Name of topic", "reason": "Brief reason it is covered"}}
-            ],
-            "missing_topics": [
-                {{"topic": "Name of topic", "reason": "Brief reason it is missing"}}
+            "analysis_nodes": [
+                {{
+                    "topic": "Name of topic", 
+                    "status": "missing, partial, or covered",
+                    "confidence_score": 85,
+                    "reason": "Brief reason for this score"
+                }}
             ]
         }}
         """
@@ -91,7 +96,7 @@ class AcademicTutorEngine:
             return json.loads(raw_response)
         except json.JSONDecodeError:
             print("❌ JSON Decode Error!")
-            return {"covered_topics": [], "missing_topics": []}
+            return {"analysis_nodes": []}
 
     # ==========================================
     # 📖 MODULE 2: THE STUDY GUIDE GENERATOR (Node-by-Node)
