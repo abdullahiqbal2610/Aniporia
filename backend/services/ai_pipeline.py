@@ -60,7 +60,7 @@ async def run_pipeline_via_http(
 
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
-            f"{ai_engine_url}/analyze-notes",
+            f"{ai_engine_url}/api/analyze",
             files={"file": (filename, image_bytes, "image/png")},
             data={"syllabus_topics": ",".join(syllabus_topics)},
         )

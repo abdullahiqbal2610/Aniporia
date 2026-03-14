@@ -1,7 +1,7 @@
 import uuid
 from services.supabase_client import get_supabase
 
-BUCKET_NAME = "notes"
+BUCKET_NAME = "uploads"
 
 CONTENT_TYPE_MAP = {
     "jpg":  "image/jpeg",
