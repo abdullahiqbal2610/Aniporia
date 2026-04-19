@@ -1,7 +1,6 @@
 import os
 import json
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 # 1. Load the environment variables
@@ -28,22 +27,21 @@ class AcademicTutorEngine:
     def _generate_with_fallback(self, prompt, system_instruction=None, is_json=False):
         """Helper to run the Fallback Matrix and enforce JSON if needed."""
         
-        # We configure the request to use System Instructions and enforce JSON schemas
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            response_mime_type="application/json" if is_json else "text/plain",
-            temperature=0.1 # Low temperature for strict, predictable analysis
-        )
-        
         for key_idx, current_key in enumerate(self.api_keys):
-            client = genai.Client(api_key=current_key)
+            genai.configure(api_key=current_key)
             
             for model_name in self.models:
                 try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=config
+                    model = genai.GenerativeModel(
+                        model_name=model_name,
+                        system_instruction=system_instruction
+                    )
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=genai.types.GenerationConfig(
+                            temperature=0.1,
+                            response_mime_type="application/json" if is_json else "text/plain"
+                        )
                     )
                     return response.text
                 except Exception as e:
