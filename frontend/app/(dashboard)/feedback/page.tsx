@@ -1,12 +1,16 @@
+// frontend/app/(dashboard)/feedback/page.tsx
+
 'use client';
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Sidebar } from '../../components/Sidebar';
 import { TopNav } from '../../components/TopNav';
 import { GlassCard } from '../../components/GlassCard';
 import { Button } from '../../components/ui/button';
 import { Progress } from '../../components/ui/progress';
-import { Trophy, TrendingUp, Target, Award, Loader2 } from 'lucide-react';
+import { Trophy, TrendingUp, Target, Award, Loader2, AlertCircle } from 'lucide-react';
+import { useMastery } from '../../hooks/useMastery';
+import { supabase } from '@/lib/supabase';
 
 interface TopicResult {
   topic: string;
@@ -31,22 +35,125 @@ const BADGE_MESSAGES: Record<string, string> = {
 
 export default function FeedbackPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [data, setData] = useState<PracticeResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  
+  const { mastery: updatedMastery, loading: masteryLoading, refetch } = useMastery();
 
   useEffect(() => {
-    const raw = sessionStorage.getItem('practice_result');
-    if (raw) {
+    const loadAndSaveSession = async () => {
       try {
-        setData(JSON.parse(raw));
-      } catch {
-        // Corrupt data — fall through to fallback
+        // Try multiple sources for session data
+        let sessionData: PracticeResult | null = null;
+        
+        // 1. Check URL params first
+        const scoreBefore = searchParams.get('before');
+        const scoreAfter = searchParams.get('score');
+        const topic = searchParams.get('topic');
+        const resultsRaw = searchParams.get('results');
+        
+        if (resultsRaw) {
+          try {
+            const results = JSON.parse(decodeURIComponent(resultsRaw));
+            sessionData = {
+              score_before: parseInt(scoreBefore || '0'),
+              score_after: parseInt(scoreAfter || '0'),
+              improvement: (parseInt(scoreAfter || '0') - parseInt(scoreBefore || '0')),
+              badge: null,
+              results: results,
+            };
+          } catch (e) {
+            console.error('Failed to parse results from URL:', e);
+          }
+        } 
+        
+        // 2. Check sessionStorage
+        if (!sessionData) {
+          const raw = sessionStorage.getItem('practice_result');
+          if (raw) {
+            try {
+              sessionData = JSON.parse(raw);
+              console.log('Loaded from sessionStorage:', sessionData);
+            } catch (e) {
+              console.error('Failed to parse sessionStorage data:', e);
+            }
+          }
+        }
+        
+        // 3. If still no data, create a simple fallback
+        if (!sessionData && topic && scoreAfter) {
+          sessionData = {
+            score_before: parseInt(scoreBefore || '0'),
+            score_after: parseInt(scoreAfter),
+            improvement: (parseInt(scoreAfter) - parseInt(scoreBefore || '0')),
+            badge: null,
+            results: [{ topic, correct: Math.round(parseInt(scoreAfter) / 100 * 3), total: 3 }],
+          };
+        }
+        
+        if (!sessionData) {
+          console.error('No session data found in URL or sessionStorage');
+          setSaveError('No practice data found. Please complete a practice session first.');
+          setLoading(false);
+          return;
+        }
+        
+        setData(sessionData);
+        
+        // Save to backend
+        setSaving(true);
+        const { data: session } = await supabase.auth.getSession();
+        const token = session.session?.access_token;
+        
+        if (token) {
+          console.log('Saving session to backend:', {
+            score_before: sessionData.score_before,
+            results: sessionData.results,
+          });
+          
+          const response = await fetch('http://localhost:8000/practice/complete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              score_before: sessionData.score_before,
+              results: sessionData.results,
+            }),
+          });
+          
+          if (response.ok) {
+            const savedData = await response.json();
+            console.log('Session saved successfully:', savedData);
+            setData(savedData);
+            // Refetch mastery after saving
+            setTimeout(() => refetch(), 500);
+            toast.success('Practice results saved!');
+          } else {
+            const errorText = await response.text();
+            console.error('Failed to save session:', errorText);
+            setSaveError('Failed to save session to server');
+          }
+        } else {
+          setSaveError('Not authenticated. Please log in again.');
+        }
+      } catch (error) {
+        console.error('Error loading session:', error);
+        setSaveError('Error loading session data');
+      } finally {
+        setLoading(false);
+        setSaving(false);
       }
-    }
-    setLoading(false);
-  }, []);
+    };
+    
+    loadAndSaveSession();
+  }, [searchParams, refetch]);
 
-  if (loading) {
+  if (loading || masteryLoading || saving) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -54,19 +161,25 @@ export default function FeedbackPage() {
     );
   }
 
-  // Fallback if sessionStorage is missing (e.g. navigated here directly)
+  // Fallback if no data
   if (!data) {
     return (
       <div className="min-h-screen bg-background">
         <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
-        <TopNav masteryPercentage={0} />
+        <TopNav masteryPercentage={updatedMastery} />
         <div className="ml-60 mt-16 p-8">
           <div className="max-w-2xl mx-auto text-center">
             <GlassCard>
-              <p className="text-muted-foreground mb-4">No session data found.</p>
-              <Button onClick={() => router.push('/gap-analysis')} className="bg-primary hover:bg-primary/90">
-                Go to Gap Analysis
-              </Button>
+              <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
+              <p className="text-muted-foreground mb-4">{saveError || 'No session data found.'}</p>
+              <div className="flex gap-4 justify-center">
+                <Button onClick={() => router.push('/practice')} className="bg-primary hover:bg-primary/90">
+                  Start New Practice
+                </Button>
+                <Button onClick={() => router.push('/gap-analysis')} variant="outline">
+                  Go to Gap Analysis
+                </Button>
+              </div>
             </GlassCard>
           </div>
         </div>
@@ -76,23 +189,33 @@ export default function FeedbackPage() {
 
   const { score_before, score_after, improvement, badge, results } = data;
 
-  // AI insights computed from real results
-  const bestTopic = results.reduce(
-    (best, r) => (r.correct / r.total > (best?.correct / best?.total || 0) ? r : best),
-    results[0]
-  );
-  const worstTopic = results.reduce(
-    (worst, r) => (r.correct / r.total < (worst?.correct / worst?.total || 1) ? r : worst),
-    results[0]
-  );
+  const bestTopic = results.length > 0
+    ? results.reduce(
+        (best, r) => (r.correct / r.total > (best?.correct / best?.total || 0) ? r : best),
+        results[0]
+      )
+    : null;
+
+  const worstTopic = results.length > 0
+    ? results.reduce(
+        (worst, r) => (r.correct / r.total < (worst?.correct / worst?.total || 1) ? r : worst),
+        results[0]
+      )
+    : null;
 
   return (
     <div className="min-h-screen bg-background">
       <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
-      <TopNav masteryPercentage={score_after} />
+      <TopNav masteryPercentage={updatedMastery} />
       <div className="ml-60 mt-16 p-8">
         <div className="max-w-4xl mx-auto">
           <h2 className="text-3xl mb-8 text-center">Practice Complete!</h2>
+          
+          {saveError && (
+            <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-500 text-sm">
+              Warning: {saveError}
+            </div>
+          )}
 
           {/* Score ring */}
           <GlassCard className="text-center mb-8">
@@ -125,6 +248,10 @@ export default function FeedbackPage() {
                 <p className="text-2xl font-bold text-mastered">{score_after}%</p>
               </div>
             </div>
+
+            <p className="text-sm text-muted-foreground mb-4">
+              Overall course mastery: <span className="text-primary font-semibold">{updatedMastery}%</span>
+            </p>
 
             {badge && (
               <div className="inline-flex items-center gap-3 px-6 py-3 rounded-full bg-primary/20 border border-primary/30">
@@ -159,7 +286,7 @@ export default function FeedbackPage() {
             </GlassCard>
           )}
 
-          {/* AI insights (derived from real results) */}
+          {/* AI insights derived from real results */}
           <GlassCard className="mb-8">
             <h3 className="text-xl mb-4 flex items-center gap-2">
               <Award className="w-6 h-6 text-partial" />AI Insights
@@ -209,20 +336,29 @@ export default function FeedbackPage() {
 
           <div className="flex gap-4">
             <Button
-              onClick={() => router.push(`/practice?topic=${encodeURIComponent(results[0]?.topic || '')}&score=${score_after}`)}
+              onClick={() => {
+                sessionStorage.setItem('refresh_dashboard', 'true');
+                router.push(`/practice?topic=${encodeURIComponent(results[0]?.topic || '')}`);
+              }}
               className="flex-1 h-11 bg-primary hover:bg-primary/90"
             >
               Practice Again
             </Button>
             <Button
-              onClick={() => router.push('/gap-analysis')}
+              onClick={() => {
+                sessionStorage.setItem('refresh_dashboard', 'true');
+                router.push('/gap-analysis');
+              }}
               variant="outline"
               className="flex-1 h-11 border-border hover:bg-accent"
             >
               Study Next Gap
             </Button>
             <Button
-              onClick={() => router.push('/dashboard')}
+              onClick={() => {
+                sessionStorage.setItem('refresh_dashboard', 'true');
+                router.push('/dashboard');
+              }}
               variant="outline"
               className="flex-1 h-11 border-border hover:bg-accent"
             >
@@ -234,3 +370,9 @@ export default function FeedbackPage() {
     </div>
   );
 }
+
+// Add toast if not already imported
+const toast = {
+  success: (msg: string) => console.log(msg),
+  error: (msg: string) => console.error(msg),
+};

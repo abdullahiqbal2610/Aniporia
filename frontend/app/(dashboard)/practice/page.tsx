@@ -1,235 +1,238 @@
+// frontend/app/(dashboard)/practice/page.tsx
+
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Sidebar } from '../../components/Sidebar';
 import { TopNav } from '../../components/TopNav';
 import { GlassCard } from '../../components/GlassCard';
 import { Button } from '../../components/ui/button';
-import { Progress } from '../../components/ui/progress';
-import { Textarea } from '../../components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group';
-import { Label } from '../../components/ui/label';
-import { Check, X, ArrowRight, Lightbulb, Loader2, BookOpen } from 'lucide-react';
+import { Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useMastery } from '../../hooks/useMastery';
 import { supabase } from '@/lib/supabase';
-import { toast } from 'sonner';
 
-interface AIQuestion {
+interface Question {
   question: string;
   options: string[];
   correct_answer: string;
   explanation: string;
 }
 
-interface AILesson {
-  topic: string;
-  tldr: string;
-  key_concepts: string[];
-  why_it_matters: string;
+interface QuizData {
+  node_topic: string;
+  lesson: string;
+  quiz: Question[];
 }
-
-interface TopicResult {
-  topic: string;
-  correct: number;
-  total: number;
-}
-
-type Phase = 'loading' | 'lesson' | 'quiz' | 'submitting' | 'error';
 
 export default function PracticePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const topicFromUrl = searchParams.get('topic') || '';
+  const scoreFromUrl = searchParams.get('score') || '0';
+  
+  const { mastery } = useMastery();
+  const [topic, setTopic] = useState(topicFromUrl);
+  const [loading, setLoading] = useState(false);
+  const [quizData, setQuizData] = useState<QuizData | null>(null);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [answers, setAnswers] = useState<string[]>([]);
+  const [selectedAnswer, setSelectedAnswer] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
 
-  // Topic comes from ?topic=Neural+Networks&score=30 (passed from gap-analysis / galaxy)
-  const topicParam = searchParams.get('topic') || '';
-  const scoreBeforeParam = parseInt(searchParams.get('score') || '0', 10);
-
-  const [phase, setPhase] = useState<Phase>('loading');
-  const [errorMsg, setErrorMsg] = useState('');
-
-  // AI content
-  const [lesson, setLesson] = useState<AILesson | null>(null);
-  const [questions, setQuestions] = useState<AIQuestion[]>([]);
-  const [topic, setTopic] = useState(topicParam);
-
-  // Quiz state
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [selectedAnswer, setSelectedAnswer] = useState('');
-  const [isSubmitted, setIsSubmitted] = useState(false);
-  const [isCorrect, setIsCorrect] = useState(false);
-  const [results, setResults] = useState<TopicResult[]>([]);
-  const [correctCount, setCorrectCount] = useState(0);
-
-  const getToken = useCallback(async () => {
-    const { data } = await supabase.auth.getSession();
-    return data.session?.access_token ?? null;
-  }, []);
-
-  // Fetch AI questions on mount
   useEffect(() => {
-    const load = async () => {
-      if (!topicParam) {
-        // No topic provided — show topic picker (fallback)
-        setPhase('error');
-        setErrorMsg('No topic selected. Please choose a gap to study from the Gap Analysis page.');
+    // Auto-start practice if topic is provided in URL
+    if (topicFromUrl && !quizData && !loading) {
+      generateQuiz();
+    } else if (!topicFromUrl && !loading) {
+      setError('No topic selected. Please go to Gap Analysis and select a topic to practice.');
+    }
+  }, [topicFromUrl]);
+
+  const generateQuiz = async () => {
+    if (!topic.trim()) {
+      setError('No topic selected. Please go to Gap Analysis and select a topic to practice.');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+
+      if (!token) {
+        router.push('/login');
         return;
       }
 
-      setPhase('loading');
-      try {
-        const token = await getToken();
-        if (!token) { router.push('/login'); return; }
-
-        const res = await fetch('http://localhost:8000/practice/generate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ topic: topicParam }),
-        });
-
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || 'Failed to generate questions.');
-        }
-
-        const data = await res.json();
-
-        // data = { node_topic, lesson: {...}, quiz: [{...}] }
-        setTopic(data.node_topic || topicParam);
-        setLesson(data.lesson || null);
-        setQuestions(data.quiz || []);
-        setPhase(data.lesson ? 'lesson' : 'quiz');
-      } catch (err: any) {
-        setErrorMsg(err.message || 'Something went wrong loading questions.');
-        setPhase('error');
-      }
-    };
-
-    load();
-  }, [topicParam, getToken, router]);
-
-  const currentQuestion = questions[currentIndex];
-  const progress = questions.length > 0
-    ? ((currentIndex + (isSubmitted ? 1 : 0)) / questions.length) * 100
-    : 0;
-
-  const handleSubmit = () => {
-    const correct = selectedAnswer === currentQuestion.correct_answer;
-    setIsCorrect(correct);
-    setIsSubmitted(true);
-  };
-
-  const handleNext = async () => {
-    // Record result for this question
-    const correct = isCorrect ? 1 : 0;
-    const updatedResults = [...results];
-    const existing = updatedResults.find(r => r.topic === topic);
-    if (existing) {
-      existing.correct += correct;
-      existing.total += 1;
-    } else {
-      updatedResults.push({ topic, correct, total: 1 });
-    }
-    setResults(updatedResults);
-
-    const newCorrectCount = correctCount + (isCorrect ? 1 : 0);
-    setCorrectCount(newCorrectCount);
-
-    if (currentIndex < questions.length - 1) {
-      setCurrentIndex(currentIndex + 1);
-      setSelectedAnswer('');
-      setIsSubmitted(false);
-      setIsCorrect(false);
-    } else {
-      // Session complete — save and go to feedback
-      await finishSession(updatedResults, newCorrectCount);
-    }
-  };
-
-  const finishSession = async (finalResults: TopicResult[], finalCorrect: number) => {
-    setPhase('submitting');
-    try {
-      const token = await getToken();
-      if (!token) { router.push('/login'); return; }
-
-      const res = await fetch('http://localhost:8000/practice/complete', {
+      console.log('Generating quiz for topic:', topic);
+      
+      const response = await fetch('http://localhost:8000/practice/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          score_before: scoreBeforeParam,
-          results: finalResults,
-        }),
+        body: JSON.stringify({ topic }),
       });
 
-      if (!res.ok) {
-        // Don't block navigation on save failure — just warn
-        toast.error('Could not save session, but your results are ready.');
-        sessionStorage.setItem('practice_result', JSON.stringify({
-          score_before: scoreBeforeParam,
-          score_after: Math.round((finalCorrect / questions.length) * 100),
-          improvement: Math.round((finalCorrect / questions.length) * 100) - scoreBeforeParam,
-          badge: null,
-          results: finalResults,
-        }));
-      } else {
-        const sessionData = await res.json();
-        sessionStorage.setItem('practice_result', JSON.stringify(sessionData));
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API Error:', response.status, errorText);
+        throw new Error(`Failed to generate quiz: ${response.status}`);
       }
 
-      router.push('/feedback');
-    } catch {
-      toast.error('Could not save session, but your results are ready.');
-      sessionStorage.setItem('practice_result', JSON.stringify({
-        score_before: scoreBeforeParam,
-        score_after: Math.round((finalCorrect / questions.length) * 100),
-        improvement: Math.round((finalCorrect / questions.length) * 100) - scoreBeforeParam,
-        badge: null,
-        results: finalResults,
-      }));
-      router.push('/feedback');
+      const data = await response.json();
+      console.log('Raw response from AI engine:', data);
+      
+      // Handle different response formats
+      let formattedQuizData: QuizData | null = null;
+      
+      // Check if the response has the expected structure
+      if (data && data.quiz && Array.isArray(data.quiz) && data.quiz.length > 0) {
+        // Already in correct format
+        formattedQuizData = {
+          node_topic: data.node_topic || topic,
+          lesson: data.lesson || '',
+          quiz: data.quiz
+        };
+      } else if (data && data.data && data.data.quiz) {
+        // Nested response format
+        formattedQuizData = {
+          node_topic: data.data.node_topic || topic,
+          lesson: data.data.lesson || '',
+          quiz: data.data.quiz
+        };
+      } else {
+        console.error('Unexpected response format:', data);
+        throw new Error('Invalid quiz data format received from server');
+      }
+      
+      // Validate each question has required fields
+      const isValid = formattedQuizData.quiz.every((q: Question) => 
+        q.question && 
+        Array.isArray(q.options) && 
+        q.options.length > 0 &&
+        q.correct_answer
+      );
+      
+      if (!isValid) {
+        console.error('Invalid question format:', formattedQuizData.quiz);
+        throw new Error('Quiz data missing required fields');
+      }
+      
+      console.log('Formatted quiz data:', formattedQuizData);
+      setQuizData(formattedQuizData);
+      setAnswers(new Array(formattedQuizData.quiz.length).fill(''));
+      setCurrentQuestionIndex(0);
+      setSelectedAnswer('');
+      
+    } catch (error) {
+      console.error('Error generating quiz:', error);
+      setError(error instanceof Error ? error.message : 'Failed to generate quiz. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // ── Loading state ──
-  if (phase === 'loading') {
-    return (
-      <div className="min-h-screen bg-background">
-        <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
-        <TopNav masteryPercentage={scoreBeforeParam} />
-        <div className="ml-60 mt-16 p-8 flex items-center justify-center min-h-[60vh]">
-          <div className="text-center">
-            <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto mb-4" />
-            <p className="text-xl mb-2">Generating your lesson...</p>
-            <p className="text-muted-foreground">AI is building a crash course on <span className="text-primary font-medium">{topicParam}</span></p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const handleAnswer = () => {
+    if (!selectedAnswer) {
+      return;
+    }
 
-  // ── Error state ──
-  if (phase === 'error') {
+    const newAnswers = [...answers];
+    newAnswers[currentQuestionIndex] = selectedAnswer;
+    setAnswers(newAnswers);
+    setSelectedAnswer('');
+
+    if (currentQuestionIndex + 1 < (quizData?.quiz.length || 0)) {
+      setCurrentQuestionIndex(currentQuestionIndex + 1);
+    } else {
+      // Quiz complete - calculate results and navigate to feedback
+      calculateAndNavigateResults(newAnswers);
+    }
+  };
+
+  const calculateAndNavigateResults = (finalAnswers: string[]) => {
+    if (!quizData) return;
+
+    const results = quizData.quiz.map((q, idx) => ({
+      topic: quizData.node_topic,
+      correct: finalAnswers[idx] === q.correct_answer ? 1 : 0,
+      total: 1,
+    }));
+
+    // Group results by topic
+    const groupedResults = results.reduce((acc, curr) => {
+      const existing = acc.find(r => r.topic === curr.topic);
+      if (existing) {
+        existing.correct += curr.correct;
+        existing.total += curr.total;
+      } else {
+        acc.push({ ...curr });
+      }
+      return acc;
+    }, [] as Array<{ topic: string; correct: number; total: number }>);
+
+    // Calculate score percentage
+    const totalCorrect = groupedResults.reduce((sum, r) => sum + r.correct, 0);
+    const totalQuestions = groupedResults.reduce((sum, r) => sum + r.total, 0);
+    const scoreAfter = Math.round((totalCorrect / totalQuestions) * 100);
+
+    // Get score before from URL or use mastery
+    const scoreBefore = parseInt(scoreFromUrl) || mastery;
+
+    // Store results in sessionStorage for feedback page
+    const sessionData = {
+      score_before: scoreBefore,
+      score_after: scoreAfter,
+      improvement: scoreAfter - scoreBefore,
+      badge: null,
+      results: groupedResults,
+    };
+    
+    sessionStorage.setItem('practice_result', JSON.stringify(sessionData));
+    
+    // Also pass via URL params as backup
+    const params = new URLSearchParams({
+      before: scoreBefore.toString(),
+      score: scoreAfter.toString(),
+      topic: quizData.node_topic,
+      results: JSON.stringify(groupedResults),
+    });
+    
+    router.push(`/feedback?${params.toString()}`);
+  };
+
+  const goToPrevious = () => {
+    if (currentQuestionIndex > 0) {
+      setCurrentQuestionIndex(currentQuestionIndex - 1);
+      setSelectedAnswer(answers[currentQuestionIndex - 1] || '');
+    }
+  };
+
+  // Show error state
+  if (error) {
     return (
       <div className="min-h-screen bg-background">
         <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
-        <TopNav masteryPercentage={0} />
+        <TopNav masteryPercentage={mastery} />
         <div className="ml-60 mt-16 p-8">
           <div className="max-w-2xl mx-auto">
-            <GlassCard className="text-center">
-              <X className="w-12 h-12 text-destructive mx-auto mb-4" />
-              <h3 className="text-xl mb-2">Could not load practice</h3>
-              <p className="text-muted-foreground mb-6">{errorMsg}</p>
-              <div className="flex gap-4 justify-center">
+            <GlassCard>
+              <div className="text-center">
+                <div className="text-red-500 mb-4">
+                  <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-semibold mb-2">Failed to Start Practice</h3>
+                <p className="text-muted-foreground mb-6">{error}</p>
                 <Button onClick={() => router.push('/gap-analysis')} className="bg-primary hover:bg-primary/90">
                   Go to Gap Analysis
                 </Button>
-                <Button onClick={() => window.location.reload()} variant="outline">
-                  Try Again
-                </Button>
               </div>
             </GlassCard>
           </div>
@@ -238,171 +241,156 @@ export default function PracticePage() {
     );
   }
 
-  // ── Submitting state ──
-  if (phase === 'submitting') {
+  if (loading) {
     return (
       <div className="min-h-screen bg-background">
         <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
-        <TopNav masteryPercentage={scoreBeforeParam} />
-        <div className="ml-60 mt-16 p-8 flex items-center justify-center min-h-[60vh]">
+        <TopNav masteryPercentage={mastery} />
+        <div className="ml-60 mt-16 p-8 flex items-center justify-center">
           <div className="text-center">
             <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto mb-4" />
-            <p className="text-xl">Saving your results...</p>
+            <p className="text-muted-foreground">Generating your practice quiz for "{topic}"...</p>
           </div>
         </div>
       </div>
     );
   }
 
-  // ── Lesson phase ──
-  if (phase === 'lesson' && lesson) {
+  if (!quizData && !topic) {
     return (
       <div className="min-h-screen bg-background">
         <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
-        <TopNav masteryPercentage={scoreBeforeParam} />
+        <TopNav masteryPercentage={mastery} />
         <div className="ml-60 mt-16 p-8">
-          <div className="max-w-3xl mx-auto">
-            <div className="mb-6 flex items-center gap-3">
-              <BookOpen className="w-6 h-6 text-primary" />
-              <h2 className="text-2xl">Quick Lesson: {lesson.topic}</h2>
-            </div>
-
-            <GlassCard className="mb-6">
-              <div className="mb-6 p-4 rounded-lg bg-primary/10 border border-primary/30">
-                <p className="text-sm text-primary font-medium mb-1">TL;DR</p>
-                <p className="text-foreground">{lesson.tldr}</p>
-              </div>
-
-              <h3 className="text-lg font-medium mb-3">Key Concepts</h3>
-              <ul className="space-y-2 mb-6">
-                {lesson.key_concepts.map((concept, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm">
-                    <Check className="w-4 h-4 text-mastered mt-0.5 flex-shrink-0" />
-                    <span>{concept}</span>
-                  </li>
-                ))}
-              </ul>
-
-              <div className="p-4 rounded-lg bg-secondary/10 border border-secondary/30">
-                <p className="text-sm text-secondary font-medium mb-1">Why it matters for the exam</p>
-                <p className="text-sm text-foreground">{lesson.why_it_matters}</p>
-              </div>
+          <div className="max-w-2xl mx-auto text-center">
+            <GlassCard>
+              <p className="text-muted-foreground mb-4">No topic selected for practice.</p>
+              <Button onClick={() => router.push('/gap-analysis')} className="bg-primary hover:bg-primary/90">
+                Go to Gap Analysis
+              </Button>
             </GlassCard>
-
-            <Button
-              onClick={() => setPhase('quiz')}
-              className="w-full h-12 bg-primary hover:bg-primary/90 text-lg"
-            >
-              I'm Ready — Start Quiz <ArrowRight className="w-5 h-5 ml-2" />
-            </Button>
           </div>
         </div>
       </div>
     );
   }
 
-  // ── Quiz phase ──
-  if (!currentQuestion) return null;
+  if (!quizData) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
+        <TopNav masteryPercentage={mastery} />
+        <div className="ml-60 mt-16 p-8">
+          <div className="max-w-2xl mx-auto">
+            <GlassCard>
+              <h2 className="text-2xl mb-4 text-center">Practice: {topic}</h2>
+              <p className="text-muted-foreground text-center mb-6">Ready to test your knowledge?</p>
+              <Button onClick={generateQuiz} className="w-full bg-primary hover:bg-primary/90">
+                Start Quiz
+              </Button>
+            </GlassCard>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Safety check - ensure quizData and current question exist
+  if (!quizData.quiz || quizData.quiz.length === 0) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
+        <TopNav masteryPercentage={mastery} />
+        <div className="ml-60 mt-16 p-8">
+          <div className="max-w-2xl mx-auto text-center">
+            <GlassCard>
+              <p className="text-muted-foreground mb-4">No questions available for this topic.</p>
+              <Button onClick={() => router.push('/gap-analysis')} className="bg-primary hover:bg-primary/90">
+                Go to Gap Analysis
+              </Button>
+            </GlassCard>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const currentQuestion = quizData.quiz[currentQuestionIndex];
+  
+  // Additional safety check for current question
+  if (!currentQuestion) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
+        <TopNav masteryPercentage={mastery} />
+        <div className="ml-60 mt-16 p-8">
+          <div className="max-w-2xl mx-auto text-center">
+            <GlassCard>
+              <p className="text-muted-foreground mb-4">Error loading question. Please try again.</p>
+              <Button onClick={() => window.location.reload()} className="bg-primary hover:bg-primary/90">
+                Retry
+              </Button>
+            </GlassCard>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const isLastQuestion = currentQuestionIndex === quizData.quiz.length - 1;
 
   return (
     <div className="min-h-screen bg-background">
       <Sidebar currentPage="practice" onNavigate={(page) => router.push(`/${page}`)} />
-      <TopNav masteryPercentage={scoreBeforeParam} />
+      <TopNav masteryPercentage={mastery} />
       <div className="ml-60 mt-16 p-8">
         <div className="max-w-3xl mx-auto">
+          {/* Progress bar */}
           <div className="mb-8">
-            <div className="flex items-center justify-between mb-2">
-              <div>
-                <h2 className="text-2xl">Quiz: {topic}</h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Question {currentIndex + 1} of {questions.length}
-                </p>
-              </div>
-              <span className="text-muted-foreground">{Math.round(progress)}% complete</span>
+            <div className="flex justify-between text-sm text-muted-foreground mb-2">
+              <span>Topic: {quizData.node_topic}</span>
+              <span>Question {currentQuestionIndex + 1} of {quizData.quiz.length}</span>
             </div>
-            <Progress value={progress} className="h-3" />
+            <div className="w-full bg-secondary h-2 rounded-full overflow-hidden">
+              <div 
+                className="bg-primary h-full transition-all duration-300"
+                style={{ width: `${((currentQuestionIndex + 1) / quizData.quiz.length) * 100}%` }}
+              />
+            </div>
           </div>
 
           <GlassCard>
-            <div className="mb-6">
-              <span className="px-3 py-1 rounded-full bg-primary/20 text-primary text-sm font-medium mb-4 inline-block">
-                Multiple Choice
-              </span>
-              <h3 className="text-xl mt-2">{currentQuestion.question}</h3>
-            </div>
-
-            <RadioGroup
-              value={selectedAnswer}
-              onValueChange={setSelectedAnswer}
-              disabled={isSubmitted}
-              className="space-y-3"
-            >
-              {currentQuestion.options.map((option, index) => {
-                const isSelected = selectedAnswer === option;
-                const isCorrectOption = option === currentQuestion.correct_answer;
-                return (
-                  <div
-                    key={index}
-                    className={`flex items-center p-4 rounded-lg border-2 transition-all ${
-                      isSubmitted && isCorrectOption
-                        ? 'border-mastered bg-mastered/10'
-                        : isSubmitted && isSelected && !isCorrectOption
-                        ? 'border-missing bg-missing/10'
-                        : isSelected
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border hover:border-primary/50'
-                    }`}
-                  >
-                    <RadioGroupItem value={option} id={`option-${index}`} className="mr-3" />
-                    <Label htmlFor={`option-${index}`} className="flex-1 cursor-pointer">
-                      {option}
-                    </Label>
-                    {isSubmitted && isCorrectOption && <Check className="w-5 h-5 text-mastered" />}
-                    {isSubmitted && isSelected && !isCorrectOption && <X className="w-5 h-5 text-missing" />}
-                  </div>
-                );
-              })}
+            <h3 className="text-xl mb-6">{currentQuestion.question}</h3>
+            
+            <RadioGroup value={selectedAnswer} onValueChange={setSelectedAnswer} className="space-y-3">
+              {currentQuestion.options && currentQuestion.options.map((option, idx) => (
+                <div key={idx} className="flex items-center space-x-3 p-3 rounded-lg hover:bg-secondary/20 transition-colors">
+                  <RadioGroupItem value={option} id={`option-${idx}`} />
+                  <label htmlFor={`option-${idx}`} className="flex-1 cursor-pointer">
+                    {option}
+                  </label>
+                </div>
+              ))}
             </RadioGroup>
 
-            {isSubmitted && (
-              <div className={`mt-6 p-4 rounded-lg border-2 ${
-                isCorrect ? 'bg-mastered/10 border-mastered/30' : 'bg-missing/10 border-missing/30'
-              }`}>
-                <div className="flex items-center gap-2 mb-2">
-                  {isCorrect
-                    ? <><Check className="w-5 h-5 text-mastered" /><span className="font-semibold text-mastered">Correct!</span></>
-                    : <><X className="w-5 h-5 text-missing" /><span className="font-semibold text-missing">Incorrect</span></>
-                  }
-                </div>
-                <div className="mt-3 p-3 bg-partial/10 border border-partial/30 rounded-lg">
-                  <div className="flex items-start gap-2">
-                    <Lightbulb className="w-5 h-5 text-partial flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="font-medium text-partial mb-1">Explanation</p>
-                      <p className="text-sm text-foreground">{currentQuestion.explanation}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
             <div className="flex gap-4 mt-8">
-              {!isSubmitted ? (
-                <Button
-                  onClick={handleSubmit}
-                  disabled={selectedAnswer === ''}
-                  className="w-full h-11 bg-primary hover:bg-primary/90 disabled:opacity-50"
-                >
-                  Submit Answer
-                </Button>
-              ) : (
-                <Button onClick={handleNext} className="w-full h-11 bg-primary hover:bg-primary/90">
-                  {currentIndex < questions.length - 1
-                    ? <><span>Next Question</span><ArrowRight className="w-5 h-5 ml-2" /></>
-                    : 'Complete Practice'
-                  }
-                </Button>
-              )}
+              <Button
+                onClick={goToPrevious}
+                disabled={currentQuestionIndex === 0}
+                variant="outline"
+                className="flex-1"
+              >
+                <ChevronLeft className="w-4 h-4 mr-2" />
+                Previous
+              </Button>
+              <Button 
+                onClick={handleAnswer} 
+                disabled={!selectedAnswer}
+                className="flex-1 bg-primary hover:bg-primary/90"
+              >
+                {isLastQuestion ? 'Complete' : 'Next'}
+                {!isLastQuestion && <ChevronRight className="w-4 h-4 ml-2" />}
+              </Button>
             </div>
           </GlassCard>
         </div>

@@ -1,15 +1,14 @@
 """
 Uploads Router
 --------------
-POST /uploads         → Upload an image, run AI Gap Analysis, save to DB
-GET  /uploads         → List uploads for a course
-GET  /uploads/{id}    → Get a single upload
-PATCH /uploads/{id}   → Update OCR text for an upload
+POST /uploads                     → Upload a note image, run AI pipeline, save results
+GET  /uploads?course_id=...       → List uploads for a course
+GET  /uploads/{id}                → Get a single upload with its full AI result
+PATCH /uploads/{id}/text          → Save corrected OCR text to DB
 """
 
 import os
-import traceback
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status, Body
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from services.supabase_client import get_supabase
 from services.auth import get_current_user
@@ -18,20 +17,17 @@ from services.ai_pipeline import run_pipeline_via_http
 
 router = APIRouter(prefix="/uploads", tags=["Uploads"])
 
-AI_ENGINE_URL = os.getenv("AI_ENGINE_URL", "http://127.0.0.1:8001")
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-
-ALLOWED_TYPES = (
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/webp",
-)
+AI_ENGINE_URL = os.getenv("AI_ENGINE_URL", "http://localhost:8001")
+MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
-class OCRUpdateRequest(BaseModel):
+# ---------- Schemas ----------
+
+class ExtractedTextUpdate(BaseModel):
     extracted_text: str
 
+
+# ---------- Routes ----------
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def upload_notes(
@@ -40,21 +36,32 @@ async def upload_notes(
     syllabus_topics: str = Form(...),
     user=Depends(get_current_user),
 ):
+    """
+    Full pipeline:
+    1. Validate the uploaded image
+    2. Upload image to Supabase Storage
+    3. Call AI engine → extract text, find gaps, generate study guide + mock exam
+    4. Save upload record (including extracted_text) to DB
+    5. Save each knowledge gap to DB
+    6. Update course mastery score
+    7. Return the full AI result to the frontend
+    """
     supabase = get_supabase()
 
-    # --- 1. Validate file type ---
-    print(f"DEBUG: Received upload request for file: {file.filename}")
-    if file.content_type not in ALLOWED_TYPES:
-        raise HTTPException(status_code=400, detail="Only PNG, JPEG, and WebP images are supported.")
+    # --- 1. Validate ---
+    if file.content_type not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only PNG, JPEG, and WebP images are supported.",
+        )
 
-    file_bytes = await file.read()
+    image_bytes = await file.read()
+    if len(image_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File exceeds the 10 MB limit.",
+        )
 
-    # --- 2. Validate file size ---
-    if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File exceeds the 10MB limit.")
-
-    # --- Verify course belongs to this user ---
-    print(f"DEBUG: Verifying course_id: {course_id}")
     course_check = (
         supabase.table("courses")
         .select("id")
@@ -64,123 +71,147 @@ async def upload_notes(
         .execute()
     )
     if not course_check.data:
-        raise HTTPException(status_code=404, detail="Course not found.")
-    print("DEBUG: Course verified ✅")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
 
-    # --- 3. Upload file to Supabase Storage ---
-    print("DEBUG: Starting storage upload...")
+    # --- 2. Upload to Storage ---
     try:
-        public_url, storage_path = upload_note_image(file_bytes, file.filename, user.id)
-        print(f"DEBUG: Storage upload success ✅ URL: {public_url}")
+        public_url, storage_path = upload_note_image(image_bytes, file.filename, user.id)
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Storage upload failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Storage upload failed: {str(e)}",
+        )
 
-    # --- 4. Run AI Pipeline ---
-    print(f"DEBUG: Starting AI pipeline... sending to {AI_ENGINE_URL}")
+    # --- 3. Run AI Pipeline ---
     topics_list = [t.strip() for t in syllabus_topics.split(",") if t.strip()]
     try:
         ai_result = await run_pipeline_via_http(
-            image_bytes=file_bytes,
+            image_bytes=image_bytes,
             filename=file.filename,
             syllabus_topics=topics_list,
             ai_engine_url=AI_ENGINE_URL,
         )
-        print(f"DEBUG: AI pipeline success ✅ Result keys: {ai_result.keys()}")
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=502, detail=f"AI engine error: {str(e)}")
-
-    # --- 5. Save upload record to database ---
-    print("DEBUG: Saving upload record to database...")
-    try:
-        result = (
-            supabase.table("uploads")
-            .insert({
-                "user_id": user.id,
-                "course_id": course_id,
-                "file_name": file.filename,
-                "file_url": public_url,
-                "content_type": file.content_type,
-            })
-            .execute()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI engine error: {str(e)}",
         )
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Database insert failed: {str(e)}")
 
-    if not result.data:
-        raise HTTPException(status_code=500, detail="Failed to save upload record.")
+    # --- 4. Save Upload record (with extracted_text) ---
+    extracted_text = ai_result.get("extracted_text", "")
 
-    upload = result.data[0]
-    print("DEBUG: Upload record saved ✅")
+    upload_result = (
+        supabase.table("uploads")
+        .insert({
+            "user_id": user.id,
+            "course_id": course_id,
+            "file_name": file.filename,
+            "file_url": public_url,
+            "content_type": file.content_type,
+            "extracted_text": extracted_text,          # ← saved here
+        })
+        .execute()
+    )
+    upload_id = upload_result.data[0]["id"]
 
-    # --- 6. Save Gaps ---
-    print("DEBUG: Saving gaps...")
-    analysis_nodes = ai_result.get("analysis", {}).get("analysis_nodes", [])
+    # --- 5. Save Gaps ---
+    missing_topics = ai_result.get("analysis", {}).get("missing_topics", [])
 
-    if analysis_nodes:
+    if missing_topics:
         gaps_to_insert = []
-        covered_count = 0
-
-        for item in analysis_nodes:
-            score = item.get("confidence_score", 0)
-
-            if score < 40:
+        for item in missing_topics:
+            score = item.get("match_score", 0)
+            if score < 0.25:
                 priority = "HIGH"
-            elif score < 80:
+            elif score < 0.40:
                 priority = "MEDIUM"
             else:
                 priority = "LOW"
-                covered_count += 1
 
             gaps_to_insert.append({
                 "user_id": user.id,
                 "course_id": course_id,
                 "topic": item["topic"],
                 "priority": priority,
-                "gap_score": score,
+                "gap_score": int((1 - score) * 100),
             })
 
         supabase.table("gaps").insert(gaps_to_insert).execute()
-        print(f"DEBUG: {len(gaps_to_insert)} gaps saved ✅")
 
-        # --- 7. Update Course Mastery ---
-        total_topics = len(analysis_nodes)
-        if total_topics > 0:
-            mastery = int((covered_count / total_topics) * 100)
-            supabase.table("courses").update({"mastery_percent": mastery}).eq("id", course_id).execute()
-            print(f"DEBUG: Course mastery updated to {mastery}% ✅")
+    # --- 6. Update mastery score on the course ---
+    covered = ai_result.get("analysis", {}).get("covered_topics", [])
+    total_topics = len(covered) + len(missing_topics)
+    if total_topics > 0:
+        mastery = int((len(covered) / total_topics) * 100)
+        supabase.table("courses").update({"mastery_percent": mastery}).eq("id", course_id).execute()
 
-    print("DEBUG: All done! Returning response.")
+    # --- 7. Return full result ---
     return {
-        "upload_id": upload["id"],
-        "file_name": upload["file_name"],
+        "upload_id": upload_id,
         "file_url": public_url,
-        "content_type": file.content_type,
-        "course_id": course_id,
-        "created_at": upload["created_at"],
         "ai_result": ai_result,
     }
 
 
+@router.patch("/{upload_id}/text", status_code=status.HTTP_200_OK)
+async def update_extracted_text(
+    upload_id: str,
+    body: ExtractedTextUpdate,
+    user=Depends(get_current_user),
+):
+    """
+    Saves the user-corrected OCR text back to the uploads table.
+    Called from the OCR review page after the user edits the extracted text.
+    Requires an `extracted_text` TEXT column on the uploads table.
+    """
+    supabase = get_supabase()
+
+    # Verify ownership
+    existing = (
+        supabase.table("uploads")
+        .select("id")
+        .eq("id", upload_id)
+        .eq("user_id", user.id)
+        .single()
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found.")
+
+    result = (
+        supabase.table("uploads")
+        .update({"extracted_text": body.extracted_text})
+        .eq("id", upload_id)
+        .execute()
+    )
+
+    return {"upload_id": upload_id, "extracted_text": body.extracted_text, "saved": True}
+
+
 @router.get("/")
 async def list_uploads(course_id: str | None = None, user=Depends(get_current_user)):
+    """Lists all uploads for the user, optionally filtered by course."""
     supabase = get_supabase()
+
     query = (
         supabase.table("uploads")
         .select("*")
         .eq("user_id", user.id)
         .order("created_at", desc=True)
     )
+
     if course_id:
         query = query.eq("course_id", course_id)
-    return query.execute().data or []
+
+    result = query.execute()
+    return result.data or []
 
 
 @router.get("/{upload_id}")
 async def get_upload(upload_id: str, user=Depends(get_current_user)):
+    """Returns a single upload record."""
     supabase = get_supabase()
+
     result = (
         supabase.table("uploads")
         .select("*")
@@ -189,40 +220,8 @@ async def get_upload(upload_id: str, user=Depends(get_current_user)):
         .single()
         .execute()
     )
+
     if not result.data:
-        raise HTTPException(status_code=404, detail="Upload not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found.")
+
     return result.data
-
-
-@router.patch("/{upload_id}")
-async def update_ocr_text(upload_id: str, request: OCRUpdateRequest = Body(...), user=Depends(get_current_user)):
-    """
-    Update the extracted OCR text for an upload after user review/corrections.
-    Note: extracted_text is stored in-memory for this session. The corrected text
-    should be passed to the gap analysis pipeline if needed.
-    """
-    supabase = get_supabase()
-    
-    # Verify upload belongs to user
-    print(f"DEBUG: Verifying upload_id: {upload_id}")
-    upload_check = (
-        supabase.table("uploads")
-        .select("id, course_id")
-        .eq("id", upload_id)
-        .eq("user_id", user.id)
-        .single()
-        .execute()
-    )
-    if not upload_check.data:
-        raise HTTPException(status_code=404, detail="Upload not found.")
-    
-    print(f"DEBUG: OCR text review confirmed ✅")
-    print(f"DEBUG: Corrected text length: {len(request.extracted_text)} chars")
-    
-    # Store corrected text in response for frontend use
-    # (actual persistence would require adding extracted_text column to uploads table)
-    return {
-        "message": "OCR text review confirmed and ready for analysis",
-        "upload_id": upload_id,
-        "extracted_text": request.extracted_text,
-    }

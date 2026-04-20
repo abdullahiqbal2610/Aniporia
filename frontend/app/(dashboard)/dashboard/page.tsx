@@ -1,3 +1,5 @@
+// frontend/app/(dashboard)/dashboard/page.tsx
+
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -10,6 +12,7 @@ import { Progress } from '../../components/ui/progress';
 import { Upload, BookOpen, FileText, Loader2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import { useMastery } from '../../hooks/useMastery';
 
 interface Course {
   id: string;
@@ -30,52 +33,75 @@ export default function DashboardPage() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [gaps, setGaps] = useState<Gap[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // Use the mastery hook for real-time updates
+  const { mastery: overallMastery, loading: masteryLoading, refetch: refetchMastery } = useMastery();
+
+  const fetchDashboardData = async () => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+
+      if (!token) {
+        router.push('/login');
+        return;
+      }
+
+      // Fetch courses and gaps in parallel
+      const [coursesRes, gapsRes] = await Promise.all([
+        fetch('http://localhost:8000/courses/', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        fetch('http://localhost:8000/gaps/', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ]);
+
+      if (coursesRes.ok) {
+        const coursesData = await coursesRes.json();
+        setCourses(coursesData);
+      }
+
+      if (gapsRes.ok) {
+        const gapsData = await gapsRes.json();
+        setGaps(gapsData);
+      }
+    } catch (error) {
+      console.error('Failed to load dashboard data:', error);
+      toast.error('Failed to load dashboard data.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const token = sessionData.session?.access_token;
-
-        if (!token) {
-          router.push('/login');
-          return;
-        }
-
-        // Fetch courses and gaps in parallel
-        const [coursesRes, gapsRes] = await Promise.all([
-          fetch('http://localhost:8000/courses/', {
-            headers: { Authorization: `Bearer ${token}` },
-          }),
-          fetch('http://localhost:8000/gaps/', {
-            headers: { Authorization: `Bearer ${token}` },
-          }),
-        ]);
-
-        if (coursesRes.ok) {
-          const coursesData = await coursesRes.json();
-          setCourses(coursesData);
-        }
-
-        if (gapsRes.ok) {
-          const gapsData = await gapsRes.json();
-          setGaps(gapsData);
-        }
-      } catch {
-        toast.error('Failed to load dashboard data.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchDashboardData();
   }, [router]);
 
-  // Compute overall mastery as average across all courses
-  const overallMastery =
-    courses.length > 0
-      ? Math.round(courses.reduce((sum, c) => sum + c.mastery_percent, 0) / courses.length)
-      : 0;
+  // Auto-refresh data when returning from practice/feedback pages
+  useEffect(() => {
+    // Check if we just came back from practice
+    const shouldRefresh = sessionStorage.getItem('refresh_dashboard');
+    if (shouldRefresh === 'true') {
+      sessionStorage.removeItem('refresh_dashboard');
+      fetchDashboardData();
+      refetchMastery(); // Force refetch mastery
+    }
+  }, [refetchMastery]);
+
+  // Set up event listener for when practice completes
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Refresh data when tab becomes visible again
+        fetchDashboardData();
+        refetchMastery();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [refetchMastery]);
 
   // Derive mastered topics count from courses with mastery >= 70
   const masteredTopicsCount = courses.filter((c) => c.mastery_percent >= 70).length;
@@ -84,7 +110,7 @@ export default function DashboardPage() {
   const highGaps = gaps.filter((g) => g.priority === 'HIGH').length;
   const totalGaps = gaps.length;
 
-  if (loading) {
+  if (loading || masteryLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex items-center gap-3 text-muted-foreground">

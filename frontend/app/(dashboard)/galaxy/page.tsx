@@ -1,3 +1,5 @@
+// frontend/app/(dashboard)/galaxy/page.tsx
+
 'use client';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
@@ -11,65 +13,97 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from '../../components/ui/badge';
 import { MasteryBadge } from '../../components/MasteryBadge';
 import { ZoomIn, ZoomOut, X, Loader2 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
 import ForceGraph2D from 'react-force-graph-2d';
+import { useMastery } from '../../hooks/useMastery';
+import { supabase } from '@/lib/supabase';
 
 interface Topic {
   id: string;
   name: string;
   course: string;
+  course_id: string;
   mastery: number;
   priority: 'HIGH' | 'MEDIUM' | 'LOW';
 }
 
+interface Course {
+  id: string;
+  name: string;
+  code: string;
+  mastery_percent: number;
+}
+
+interface Gap {
+  id: string;
+  topic: string;
+  priority: 'HIGH' | 'MEDIUM' | 'LOW';
+  gap_score: number;
+  course_id: string;
+}
+
 export default function GalaxyPage() {
   const router = useRouter();
+  const { mastery: overallMastery } = useMastery();
+  
+  const [topics, setTopics] = useState<Topic[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [gaps, setGaps] = useState<Gap[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [topics, setTopics] = useState<Topic[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [overallMastery, setOverallMastery] = useState(0);
   const graphRef = useRef<any>(null);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) { router.push('/login'); return; }
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
 
-        const token = session.access_token;
-        const headers = { Authorization: `Bearer ${token}` };
+        if (!token) {
+          router.push('/login');
+          return;
+        }
 
-        const [gapsRes, coursesRes] = await Promise.all([
-          fetch('http://localhost:8000/gaps/', { headers }),
-          fetch('http://localhost:8000/courses/', { headers }),
+        // Fetch courses and gaps in parallel
+        const [coursesRes, gapsRes] = await Promise.all([
+          fetch('http://localhost:8000/courses/', {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          fetch('http://localhost:8000/gaps/', {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
         ]);
 
-        if (gapsRes.ok) {
-          const gaps = await gapsRes.json();
-          // Map gaps to Topic shape — gap_score is current mastery (0-100)
-          const mapped: Topic[] = gaps.map((g: any) => ({
-            id: g.id,
-            name: g.topic,
-            course: g.courses ? `${g.courses.code}` : 'Unknown',
-            mastery: g.gap_score,
-            priority: g.priority,
-          }));
-          setTopics(mapped);
-        }
+        let coursesData: Course[] = [];
+        let gapsData: Gap[] = [];
 
         if (coursesRes.ok) {
-          const courses = await coursesRes.json();
-          if (courses.length > 0) {
-            const avg = Math.round(
-              courses.reduce((s: number, c: any) => s + c.mastery_percent, 0) / courses.length
-            );
-            setOverallMastery(avg);
-          }
+          coursesData = await coursesRes.json();
+          setCourses(coursesData);
         }
-      } catch {
-        // Silently fall back — galaxy still renders empty
+
+        if (gapsRes.ok) {
+          gapsData = await gapsRes.json();
+          setGaps(gapsData);
+        }
+
+        // Transform gaps into topics
+        const topicsData: Topic[] = gapsData.map((gap) => {
+          const course = coursesData.find(c => c.id === gap.course_id);
+          return {
+            id: gap.id,
+            name: gap.topic,
+            course: course?.name || gap.course_id,
+            course_id: gap.course_id,
+            mastery: gap.gap_score || 0,
+            priority: gap.priority,
+          };
+        });
+
+        setTopics(topicsData);
+      } catch (error) {
+        console.error('Error fetching galaxy data:', error);
       } finally {
         setLoading(false);
       }
@@ -86,14 +120,10 @@ export default function GalaxyPage() {
       val: 20,
       color: topic.mastery >= 70 ? '#10B981' : topic.mastery >= 40 ? '#F59E0B' : '#EF4444',
     })),
-    // Link consecutive topics in the same course
-    links: topics.slice(0, -1).reduce((links: any[], topic, i) => {
-      const next = topics[i + 1];
-      if (next && topic.course === next.course) {
-        links.push({ source: topic.id, target: next.id });
-      }
-      return links;
-    }, []),
+    links: topics.slice(0, -1).map((topic, index) => ({
+      source: topic.id,
+      target: topics[index + 1]?.id || topics[0].id,
+    })),
   };
 
   const handleNodeClick = useCallback((node: any) => {
@@ -101,18 +131,21 @@ export default function GalaxyPage() {
     if (topic) setSelectedTopic(topic);
   }, [topics]);
 
-  const studyTopic = (topic: Topic) => {
+  const handleStudy = (topic: Topic) => {
     router.push(`/practice?topic=${encodeURIComponent(topic.name)}&score=${topic.mastery}`);
   };
 
-  const getStatusColor = (mastery: number) => {
-    if (mastery >= 70) return 'bg-mastered/20 text-mastered border-mastered/30';
-    if (mastery >= 40) return 'bg-partial/20 text-partial border-partial/30';
+  const getStatusColor = (m: number) => {
+    if (m >= 70) return 'bg-mastered/20 text-mastered border-mastered/30';
+    if (m >= 40) return 'bg-partial/20 text-partial border-partial/30';
     return 'bg-missing/20 text-missing border-missing/30';
   };
 
-  const getStatusText = (mastery: number) =>
-    mastery >= 70 ? 'Mastered' : mastery >= 40 ? 'Partial' : 'Gap';
+  const getStatusText = (m: number) => {
+    if (m >= 70) return 'Mastered';
+    if (m >= 40) return 'Partial';
+    return 'Gap';
+  };
 
   const filteredTopics = topics.filter((topic) => {
     const matchesSearch = topic.name.toLowerCase().includes(searchQuery.toLowerCase());
@@ -131,10 +164,7 @@ export default function GalaxyPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="flex items-center gap-3 text-muted-foreground">
-          <Loader2 className="w-6 h-6 animate-spin" />
-          <span>Loading your knowledge galaxy...</span>
-        </div>
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
       </div>
     );
   }
@@ -153,37 +183,27 @@ export default function GalaxyPage() {
               <TabsTrigger value="report">Gap Report</TabsTrigger>
             </TabsList>
 
-            {/* ── Galaxy View ── */}
             <TabsContent value="galaxy">
               <GlassCard className="relative">
                 <div className="absolute top-4 left-4 z-10 flex gap-2">
-                  <Button
-                    onClick={() => graphRef.current?.zoom(2, 400)}
-                    size="sm" variant="outline"
-                    className="bg-card/80 backdrop-blur"
-                  >
+                  <Button onClick={() => graphRef.current?.zoom(2, 400)} size="sm" variant="outline" className="bg-card/80 backdrop-blur">
                     <ZoomIn className="w-4 h-4" />
                   </Button>
-                  <Button
-                    onClick={() => graphRef.current?.zoom(0.5, 400)}
-                    size="sm" variant="outline"
-                    className="bg-card/80 backdrop-blur"
-                  >
+                  <Button onClick={() => graphRef.current?.zoom(0.5, 400)} size="sm" variant="outline" className="bg-card/80 backdrop-blur">
                     <ZoomOut className="w-4 h-4" />
                   </Button>
                 </div>
-
-                {topics.length === 0 ? (
-                  <div className="h-[700px] bg-background/50 rounded-lg flex items-center justify-center">
-                    <div className="text-center">
-                      <p className="text-muted-foreground mb-4">No topics yet. Upload notes to build your galaxy.</p>
-                      <Button onClick={() => router.push('/upload')} className="bg-primary hover:bg-primary/90">
-                        Upload Notes
-                      </Button>
+                <div className="h-[700px] bg-background/50 rounded-lg">
+                  {topics.length === 0 ? (
+                    <div className="flex items-center justify-center h-full">
+                      <div className="text-center text-muted-foreground">
+                        <p className="mb-4">No topics found.</p>
+                        <Button onClick={() => router.push('/upload')} className="bg-primary hover:bg-primary/90">
+                          Upload Course Materials
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="h-[700px] bg-background/50 rounded-lg">
+                  ) : (
                     <ForceGraph2D
                       ref={graphRef}
                       graphData={graphData}
@@ -210,10 +230,9 @@ export default function GalaxyPage() {
                         ctx.fillText(label, node.x!, node.y! + 10 + bckgDimensions[1] / 2);
                       }}
                     />
-                  </div>
-                )}
+                  )}
+                </div>
               </GlassCard>
-
               {selectedTopic && (
                 <div className="fixed right-8 top-24 w-80 z-20">
                   <GlassCard>
@@ -237,11 +256,11 @@ export default function GalaxyPage() {
                           {getStatusText(selectedTopic.mastery)}
                         </Badge>
                       </div>
-                      <Button
-                        onClick={() => studyTopic(selectedTopic)}
+                      <Button 
+                        onClick={() => handleStudy(selectedTopic)} 
                         className="w-full bg-primary hover:bg-primary/90"
                       >
-                        Study This Gap
+                        Study This Topic
                       </Button>
                     </div>
                   </GlassCard>
@@ -249,7 +268,6 @@ export default function GalaxyPage() {
               )}
             </TabsContent>
 
-            {/* ── List View ── */}
             <TabsContent value="list">
               <GlassCard>
                 <div className="flex gap-4 mb-6">
@@ -271,52 +289,50 @@ export default function GalaxyPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="border-b border-border">
-                      <tr>
-                        <th className="text-left py-3 px-4">Topic</th>
-                        <th className="text-left py-3 px-4">Course</th>
-                        <th className="text-left py-3 px-4">Status</th>
-                        <th className="text-left py-3 px-4">Mastery</th>
-                        <th className="text-left py-3 px-4">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredTopics.map((topic) => (
-                        <tr key={topic.id} className="border-b border-border hover:bg-accent/50 transition-colors">
-                          <td className="py-4 px-4 font-medium">{topic.name}</td>
-                          <td className="py-4 px-4 text-muted-foreground">{topic.course}</td>
-                          <td className="py-4 px-4">
-                            <Badge className={getStatusColor(topic.mastery)}>
-                              {getStatusText(topic.mastery)}
-                            </Badge>
-                          </td>
-                          <td className="py-4 px-4">
-                            <MasteryBadge percentage={topic.mastery} />
-                          </td>
-                          <td className="py-4 px-4">
-                            <Button
-                              onClick={() => studyTopic(topic)}
-                              size="sm"
-                              variant="outline"
-                              className="border-primary/50 text-primary"
-                            >
-                              Study
-                            </Button>
-                          </td>
+                {topics.length === 0 ? (
+                  <div className="text-center py-12 text-muted-foreground">
+                    <p>No topics found. Upload course materials to generate topics.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="border-b border-border">
+                        <tr>
+                          <th className="text-left py-3 px-4">Topic</th>
+                          <th className="text-left py-3 px-4">Course</th>
+                          <th className="text-left py-3 px-4">Status</th>
+                          <th className="text-left py-3 px-4">Mastery</th>
+                          <th className="text-left py-3 px-4">Action</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {filteredTopics.length === 0 && (
-                    <p className="text-center text-muted-foreground py-8">No topics match your filter.</p>
-                  )}
-                </div>
+                      </thead>
+                      <tbody>
+                        {filteredTopics.map((topic) => (
+                          <tr key={topic.id} className="border-b border-border hover:bg-accent/50 transition-colors">
+                            <td className="py-4 px-4 font-medium">{topic.name}</td>
+                            <td className="py-4 px-4 text-muted-foreground">{topic.course}</td>
+                            <td className="py-4 px-4">
+                              <Badge className={getStatusColor(topic.mastery)}>{getStatusText(topic.mastery)}</Badge>
+                            </td>
+                            <td className="py-4 px-4"><MasteryBadge percentage={topic.mastery} /></td>
+                            <td className="py-4 px-4">
+                              <Button 
+                                onClick={() => handleStudy(topic)} 
+                                size="sm" 
+                                variant="outline" 
+                                className="border-primary/50 text-primary"
+                              >
+                                Study
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </GlassCard>
             </TabsContent>
 
-            {/* ── Gap Report ── */}
             <TabsContent value="report">
               <GlassCard>
                 <h3 className="text-xl mb-6">Knowledge Gap Summary</h3>
@@ -334,9 +350,16 @@ export default function GalaxyPage() {
                     <p className="text-sm text-muted-foreground">Knowledge Gaps</p>
                   </div>
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  Overall mastery across {topics.length} topics: <span className="font-semibold text-foreground">{overallMastery}%</span>
-                </p>
+                <div className="mt-6 p-4 rounded-lg bg-primary/10 border border-primary/30">
+                  <p className="font-medium mb-2">Recommendation</p>
+                  <p className="text-sm text-muted-foreground">
+                    {gapCount > 0 
+                      ? `You have ${gapCount} knowledge gaps that need attention. Focus on high-priority topics first.`
+                      : partialCount > 0
+                      ? `Great progress! Review the ${partialCount} partially mastered topics to reach full mastery.`
+                      : "Excellent work! All topics are mastered. Keep maintaining your knowledge with regular practice."}
+                  </p>
+                </div>
               </GlassCard>
             </TabsContent>
           </Tabs>

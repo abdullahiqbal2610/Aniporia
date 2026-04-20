@@ -1,3 +1,5 @@
+// frontend/app/(dashboard)/gap-analysis/page.tsx
+
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -6,11 +8,9 @@ import { TopNav } from '../../components/TopNav';
 import { GlassCard } from '../../components/GlassCard';
 import { Button } from '../../components/ui/button';
 import { Progress } from '../../components/ui/progress';
-import { PriorityBadge } from '../../components/PriorityBadge';
-import { ArrowRight, Loader2 } from 'lucide-react';
+import { AlertTriangle, TrendingUp, BookOpen, Loader2, ArrowRight } from 'lucide-react';
+import { useMastery } from '../../hooks/useMastery';
 import { supabase } from '@/lib/supabase';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
 
 interface Gap {
   id: string;
@@ -18,171 +18,264 @@ interface Gap {
   priority: 'HIGH' | 'MEDIUM' | 'LOW';
   gap_score: number;
   course_id: string;
-  courses?: { name: string; code: string };
+  course_name?: string;
 }
 
 export default function GapAnalysisPage() {
   const router = useRouter();
+  const { mastery, loading: masteryLoading } = useMastery();
   const [gaps, setGaps] = useState<Gap[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [overallMastery, setOverallMastery] = useState(0);
+  const [selectedGap, setSelectedGap] = useState<Gap | null>(null);
 
   useEffect(() => {
-    const fetchData = async () => {
+    const fetchGaps = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) { router.push('/login'); return; }
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
 
-        const token = session.access_token;
-        const headers = { Authorization: `Bearer ${token}` };
+        if (!token) {
+          router.push('/login');
+          return;
+        }
 
-        const [gapsRes, coursesRes] = await Promise.all([
-          fetch(`${API_URL}/gaps/`, { headers }),
-          fetch(`${API_URL}/courses/`, { headers }),
-        ]);
+        const response = await fetch('http://localhost:8000/gaps/', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
 
-        if (!gapsRes.ok) throw new Error(`Failed to fetch gaps: ${gapsRes.status}`);
-
-        const gapsData: Gap[] = await gapsRes.json();
-        setGaps(gapsData);
-
-        if (coursesRes.ok) {
-          const courses = await coursesRes.json();
-          if (courses.length > 0) {
-            const avg = Math.round(
-              courses.reduce((s: number, c: any) => s + c.mastery_percent, 0) / courses.length
-            );
-            setOverallMastery(avg);
+        if (response.ok) {
+          const gapsData = await response.json();
+          setGaps(gapsData);
+          
+          // Select first high priority gap by default
+          const highPriorityGap = gapsData.find((g: Gap) => g.priority === 'HIGH');
+          if (highPriorityGap) {
+            setSelectedGap(highPriorityGap);
+          } else if (gapsData.length > 0) {
+            setSelectedGap(gapsData[0]);
           }
         }
-      } catch (err: any) {
-        setError(err.message);
+      } catch (error) {
+        console.error('Error fetching gaps:', error);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
+    fetchGaps();
   }, [router]);
 
-  // Navigate to practice with topic and its current gap_score as score_before
-  const studyGap = (gap: Gap) => {
-    router.push(`/practice?topic=${encodeURIComponent(gap.topic)}&score=${gap.gap_score}`);
+  const handlePractice = () => {
+    if (selectedGap) {
+      // Get the current mastery for this specific gap
+      const currentScore = selectedGap.gap_score || 0;
+      
+      // Navigate to practice with the topic and current score
+      router.push(`/practice?topic=${encodeURIComponent(selectedGap.topic)}&score=${currentScore}`);
+    }
   };
 
-  const highCount = gaps.filter(g => g.priority === 'HIGH').length;
-  const mediumCount = gaps.filter(g => g.priority === 'MEDIUM').length;
-  const lowCount = gaps.filter(g => g.priority === 'LOW').length;
+  const getPriorityColor = (priority: string) => {
+    switch (priority) {
+      case 'HIGH':
+        return 'text-red-500 bg-red-500/10';
+      case 'MEDIUM':
+        return 'text-yellow-500 bg-yellow-500/10';
+      case 'LOW':
+        return 'text-green-500 bg-green-500/10';
+      default:
+        return 'text-gray-500 bg-gray-500/10';
+    }
+  };
 
-  if (loading) return (
-    <div className="min-h-screen bg-background flex items-center justify-center">
-      <div className="flex items-center gap-3 text-muted-foreground">
-        <Loader2 className="w-6 h-6 animate-spin" />
-        <span>Loading gaps...</span>
+  const getPriorityLabel = (priority: string) => {
+    switch (priority) {
+      case 'HIGH':
+        return 'High Priority';
+      case 'MEDIUM':
+        return 'Medium Priority';
+      case 'LOW':
+        return 'Low Priority';
+      default:
+        return priority;
+    }
+  };
+
+  if (loading || masteryLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
       </div>
-    </div>
-  );
+    );
+  }
 
-  if (error) return (
-    <div className="min-h-screen bg-background flex items-center justify-center">
-      <p className="text-red-500">Error: {error}</p>
-    </div>
-  );
+  const highPriorityCount = gaps.filter(g => g.priority === 'HIGH').length;
+  const avgGapScore = gaps.length > 0 
+    ? Math.round(gaps.reduce((sum, g) => sum + (g.gap_score || 0), 0) / gaps.length)
+    : 0;
 
   return (
     <div className="min-h-screen bg-background">
       <Sidebar currentPage="gap-analysis" onNavigate={(page) => router.push(`/${page}`)} />
-      <TopNav masteryPercentage={overallMastery} />
+      <TopNav masteryPercentage={mastery} />
       <div className="ml-60 mt-16 p-8">
-        <div className="max-w-6xl mx-auto">
-          <div className="mb-8">
-            <h2 className="text-3xl mb-2">Gap Analysis Dashboard</h2>
-            <p className="text-muted-foreground">Prioritized knowledge gaps across all your courses</p>
-          </div>
+        <div className="max-w-7xl mx-auto">
+          <h2 className="text-3xl mb-2">Knowledge Gaps</h2>
+          <p className="text-muted-foreground mb-8">
+            Identify and close your knowledge gaps to improve mastery
+          </p>
 
-          {/* Summary cards */}
+          {/* Stats Row */}
           <div className="grid grid-cols-3 gap-6 mb-8">
-            {[
-              { label: 'High Priority', count: highCount, level: 'HIGH' as const, colorClass: 'text-missing' },
-              { label: 'Medium Priority', count: mediumCount, level: 'MEDIUM' as const, colorClass: 'text-partial' },
-              { label: 'Low Priority', count: lowCount, level: 'LOW' as const, colorClass: 'text-secondary' },
-            ].map(({ label, count, level, colorClass }) => (
-              <GlassCard key={level}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-muted-foreground mb-1">{label}</p>
-                    <p className={`text-3xl font-bold ${colorClass}`}>{count}</p>
-                  </div>
-                  <PriorityBadge level={level} />
-                </div>
-              </GlassCard>
-            ))}
-          </div>
-
-          {/* Gap cards */}
-          {gaps.length === 0 ? (
             <GlassCard>
-              <div className="text-center py-12">
-                <p className="text-muted-foreground mb-4">
-                  No gaps found. Upload your notes to generate a gap analysis!
-                </p>
-                <Button onClick={() => router.push('/upload')} className="bg-primary hover:bg-primary/90">
-                  Upload Notes
-                </Button>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm">Total Gaps</p>
+                  <p className="text-3xl font-bold">{gaps.length}</p>
+                </div>
+                <AlertTriangle className="w-8 h-8 text-yellow-500" />
               </div>
             </GlassCard>
-          ) : (
-            <div className="grid grid-cols-2 gap-6">
-              {gaps.map((gap) => (
-                <GlassCard
-                  key={gap.id}
-                  className={
-                    gap.priority === 'HIGH'
-                      ? 'border-missing/50 bg-missing/5'
-                      : gap.priority === 'MEDIUM'
-                      ? 'border-partial/30'
-                      : ''
-                  }
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold mb-1">{gap.topic}</h3>
-                      <p className="text-sm text-muted-foreground">
-                        {gap.courses
-                          ? `${gap.courses.name} — ${gap.courses.code}`
-                          : 'Unknown Course'}
+
+            <GlassCard>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm">High Priority</p>
+                  <p className="text-3xl font-bold text-red-500">{highPriorityCount}</p>
+                </div>
+                <TrendingUp className="w-8 h-8 text-red-500" />
+              </div>
+            </GlassCard>
+
+            <GlassCard>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm">Avg. Gap Score</p>
+                  <p className="text-3xl font-bold">{avgGapScore}%</p>
+                </div>
+                <BookOpen className="w-8 h-8 text-primary" />
+              </div>
+            </GlassCard>
+          </div>
+
+          <div className="grid grid-cols-2 gap-6">
+            {/* Gaps List */}
+            <GlassCard>
+              <h3 className="text-xl mb-4">Your Gaps</h3>
+              {gaps.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p>No knowledge gaps found!</p>
+                  <p className="text-sm mt-2">Upload course materials to identify gaps.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {gaps.map((gap) => (
+                    <div
+                      key={gap.id}
+                      className={`p-4 rounded-lg cursor-pointer transition-all ${
+                        selectedGap?.id === gap.id
+                          ? 'bg-primary/20 border border-primary/50'
+                          : 'bg-secondary/20 hover:bg-secondary/30'
+                      }`}
+                      onClick={() => setSelectedGap(gap)}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-medium">{gap.topic}</span>
+                        <span className={`text-xs px-2 py-1 rounded-full ${getPriorityColor(gap.priority)}`}>
+                          {getPriorityLabel(gap.priority)}
+                        </span>
+                      </div>
+                      <Progress value={gap.gap_score || 0} className="h-2" />
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Score: {gap.gap_score || 0}%
                       </p>
                     </div>
-                    <PriorityBadge level={gap.priority} />
-                  </div>
+                  ))}
+                </div>
+              )}
+            </GlassCard>
 
-                  <div className="mb-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-muted-foreground">Current mastery</span>
-                      <span className="text-sm font-medium">{gap.gap_score}%</span>
+            {/* Selected Gap Details */}
+            <GlassCard>
+              {selectedGap ? (
+                <>
+                  <h3 className="text-xl mb-4">Practice Recommendation</h3>
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-muted-foreground text-sm">Topic</p>
+                      <p className="text-lg font-semibold">{selectedGap.topic}</p>
                     </div>
-                    <Progress value={gap.gap_score} className="h-2" />
-                  </div>
+                    
+                    <div>
+                      <p className="text-muted-foreground text-sm">Current Score</p>
+                      <div className="flex items-center gap-3">
+                        <Progress value={selectedGap.gap_score || 0} className="flex-1 h-3" />
+                        <span className="font-bold">{selectedGap.gap_score || 0}%</span>
+                      </div>
+                    </div>
 
-                  <div className="flex gap-3">
-                    <Button
-                      onClick={() => studyGap(gap)}
-                      className="flex-1 bg-primary hover:bg-primary/90 h-11"
-                    >
-                      Study Now
-                    </Button>
-                    <Button
-                      onClick={() => studyGap(gap)}
-                      variant="outline"
-                      className="flex-1 border-secondary/50 text-secondary hover:bg-secondary/10 h-11"
-                    >
-                      Jump to Practice
-                      <ArrowRight className="w-4 h-4 ml-2" />
-                    </Button>
+                    <div>
+                      <p className="text-muted-foreground text-sm">Priority Level</p>
+                      <span className={`inline-block px-3 py-1 rounded-full text-sm ${getPriorityColor(selectedGap.priority)}`}>
+                        {getPriorityLabel(selectedGap.priority)}
+                      </span>
+                    </div>
+
+                    <div className="pt-4">
+                      <Button 
+                        onClick={handlePractice}
+                        className="w-full bg-primary hover:bg-primary/90"
+                      >
+                        Practice This Topic
+                        <ArrowRight className="w-4 h-4 ml-2" />
+                      </Button>
+                    </div>
+
+                    <div className="mt-4 p-3 rounded-lg bg-secondary/20 text-sm text-muted-foreground">
+                      <p className="font-medium mb-1">Why practice this?</p>
+                      <p>
+                        {selectedGap.priority === 'HIGH' 
+                          ? 'This is a critical knowledge gap that needs immediate attention. Practice will significantly improve your mastery.'
+                          : selectedGap.priority === 'MEDIUM'
+                          ? 'Good progress but room for improvement. Regular practice will help solidify this topic.'
+                          : 'You have a good grasp of this topic. A quick review will help maintain your knowledge.'}
+                      </p>
+                    </div>
                   </div>
-                </GlassCard>
-              ))}
+                </>
+              ) : (
+                <div className="text-center py-12 text-muted-foreground">
+                  <AlertTriangle className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No gap selected</p>
+                  <p className="text-sm mt-2">Click on a gap from the list to get started</p>
+                </div>
+              )}
+            </GlassCard>
+          </div>
+
+          {/* Quick Stats Section */}
+          {gaps.length > 0 && (
+            <div className="mt-8">
+              <GlassCard>
+                <h3 className="text-xl mb-4">Study Recommendations</h3>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="text-center p-3 rounded-lg bg-red-500/10">
+                    <p className="text-2xl font-bold text-red-500">{highPriorityCount}</p>
+                    <p className="text-sm text-muted-foreground">High Priority Gaps</p>
+                    <p className="text-xs mt-1">Practice these first</p>
+                  </div>
+                  <div className="text-center p-3 rounded-lg bg-yellow-500/10">
+                    <p className="text-2xl font-bold text-yellow-500">{gaps.filter(g => g.priority === 'MEDIUM').length}</p>
+                    <p className="text-sm text-muted-foreground">Medium Priority</p>
+                    <p className="text-xs mt-1">Review when possible</p>
+                  </div>
+                  <div className="text-center p-3 rounded-lg bg-green-500/10">
+                    <p className="text-2xl font-bold text-green-500">{gaps.filter(g => g.priority === 'LOW').length}</p>
+                    <p className="text-sm text-muted-foreground">Low Priority</p>
+                    <p className="text-xs mt-1">Quick maintenance</p>
+                  </div>
+                </div>
+              </GlassCard>
             </div>
           )}
         </div>
