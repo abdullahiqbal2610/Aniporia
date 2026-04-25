@@ -1,8 +1,12 @@
 import { MasteryBadge } from './MasteryBadge';
 
+import { ProfileDropdown } from './ProfileDropdown';
+
 interface TopNavProps {
   masteryPercentage: number;
 }
+
+
 
 export function TopNav({ masteryPercentage }: TopNavProps) {
   return (
@@ -10,9 +14,9 @@ export function TopNav({ masteryPercentage }: TopNavProps) {
       <div className="flex items-center gap-4">
         <h2 className="text-xl">Dashboard</h2>
       </div>
-
       <div className="flex items-center gap-4">
         <MasteryBadge percentage={masteryPercentage} />
+        <ProfileDropdown />
       </div>
     </div>
   );
