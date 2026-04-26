@@ -13,7 +13,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
     { id: 'galaxy', label: 'Galaxy', icon: Globe },
     { id: 'gap-analysis', label: 'Gap Analysis', icon: AlertCircle },
     { id: 'practice', label: 'Practice', icon: BookOpen },
-    { id: 'mock-exam', label: 'Mock Exam', icon: Lock, locked: true },
+    { id: 'mock-exam', label: 'Mock Exam', icon: Lock },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 

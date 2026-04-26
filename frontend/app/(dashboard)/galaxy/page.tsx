@@ -165,13 +165,12 @@ export default function GalaxyPage() {
     },
   };
   const cardVariants = {
-    hidden: { opacity: 0, y: 30, scale: 0.95, filter: 'blur(8px)' },
+    hidden: { opacity: 0, y: 30, scale: 0.95 },
     visible: {
       opacity: 1,
       y: 0,
       scale: 1,
-      filter: 'blur(0px)',
-      transition: { type: 'spring', damping: 20, stiffness: 100 },
+      transition: { type: 'spring' as const, damping: 20, stiffness: 100 },
     },
   };
   const itemVariants = {

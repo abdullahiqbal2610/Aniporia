@@ -13,6 +13,7 @@ GET  /practice/stats               → Aggregated stats (avg score, improvement,
 
 import os
 import httpx
+import time
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from services.supabase_client import get_supabase
@@ -396,4 +397,127 @@ async def get_stats(user=Depends(get_current_user)):
         "avg_improvement": round(sum(improvements) / len(improvements), 1),
         "best_score": max(scores),
         "badges": badges,
+    }
+
+
+# ---------- Mock Exam Routes ----------
+
+class MockExamQuestion(BaseModel):
+    id: int
+    question: str
+    options: list[str]
+    correct_answer: int  # index of correct option
+
+
+class MockExamRequest(BaseModel):
+    """Request to start a mock exam"""
+    pass
+
+
+class MockExamSubmitRequest(BaseModel):
+    """Submit mock exam answers"""
+    answers: dict[int, int]  # question_id -> selected_option_index
+
+
+@router.get("/mock-exam/status", response_model=dict)
+async def mock_exam_status(user=Depends(get_current_user)):
+    """Check if user is eligible for mock exam and get current score/gaps"""
+    supabase = get_supabase()
+    
+    # Get user's courses and calculate overall mastery
+    courses = (
+        supabase.table("courses")
+        .select("mastery_percent")
+        .eq("user_id", user.id)
+        .execute()
+    ).data or []
+    
+    if not courses:
+        current_mastery = 0
+    else:
+        current_mastery = round(sum(c["mastery_percent"] for c in courses) / len(courses))
+    
+    # Get gaps
+    gaps = (
+        supabase.table("gaps")
+        .select("topic, priority")
+        .eq("user_id", user.id)
+        .eq("priority", "HIGH")
+        .execute()
+    ).data or []
+    
+    return {
+        "current_mastery": current_mastery,
+        "required_mastery": 0,
+        "is_unlocked": True,
+        "gaps_remaining": len(gaps),
+        "gap_topics": [g["topic"] for g in gaps[:12]],
+    }
+
+
+@router.post("/mock-exam/start")
+async def start_mock_exam(body: MockExamRequest, user=Depends(get_current_user)):
+    """Generate a new mock exam with 50 questions"""
+    
+    # Create mock exam questions (50 questions across different topics)
+    topics = [
+        "Data Structures", "Algorithms", "Database Design", "System Design",
+        "Operating Systems", "Networking", "Web Development", "Machine Learning",
+        "Software Engineering", "Security"
+    ]
+    
+    questions = []
+    question_id = 1
+    
+    for i, topic in enumerate(topics):
+        for j in range(5):  # 5 questions per topic
+            questions.append(MockExamQuestion(
+                id=question_id,
+                question=f"Question {question_id}: What is an important concept in {topic}?",
+                options=[
+                    f"{topic} concept A",
+                    f"{topic} concept B",
+                    f"{topic} concept C",
+                    f"{topic} concept D",
+                ],
+                correct_answer=j % 4
+            ))
+            question_id += 1
+    
+    return {
+        "exam_id": f"mock_{user.id}_{int(time.time())}",
+        "total_questions": len(questions),
+        "questions": [q.model_dump() for q in questions],
+        "time_limit_minutes": 120,
+    }
+
+
+@router.post("/mock-exam/submit")
+async def submit_mock_exam(body: MockExamSubmitRequest, user=Depends(get_current_user)):
+    """Submit mock exam answers and get results"""
+    
+    # For now, calculate score based on submitted answers
+    # In production, you'd verify against actual correct answers
+    total = len(body.answers)
+    correct = sum(1 for v in body.answers.values() if v == 0)  # Simplified: answer 0 is always correct
+    
+    score = round((correct / total) * 100) if total > 0 else 0
+    
+    supabase = get_supabase()
+    
+    # Save mock exam result
+    result = supabase.table("practice_sessions").insert({
+        "user_id": user.id,
+        "score_before": 0,
+        "score_after": score,
+        "badge": _compute_badge(score, score),
+        "exam_type": "mock",
+    }).execute()
+    
+    return {
+        "score": score,
+        "correct": correct,
+        "total": total,
+        "passed": score >= 70,
+        "badge": _compute_badge(score, score),
     }

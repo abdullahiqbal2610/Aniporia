@@ -163,7 +163,9 @@ export default function RegisterPage() {
     link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@700;800&display=swap';
     document.head.appendChild(link);
     setTimeout(() => setMounted(true), 50);
-    return () => document.head.removeChild(link);
+    return () => {
+      document.head.removeChild(link);
+    };
   }, []);
 
   /* validation */

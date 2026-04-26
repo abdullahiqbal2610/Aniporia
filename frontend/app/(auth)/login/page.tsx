@@ -128,7 +128,9 @@ export default function LoginPage() {
     link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@700;800&display=swap';
     document.head.appendChild(link);
     setTimeout(() => setMounted(true), 50);
-    return () => document.head.removeChild(link);
+    return () => {
+      document.head.removeChild(link);
+    };
   }, []);
 
   const handleLogin = async () => {
@@ -153,12 +155,9 @@ export default function LoginPage() {
       <StarField />
 
       {/* Ambient orbs */}
-      <Orb className="w-[500px] h-[500px] top-[-100px] left-[-100px]"
-        style={{ background: 'radial-gradient(circle, rgba(109,40,217,0.25) 0%, transparent 70%)' } as any} />
-      <Orb className="w-[400px] h-[400px] bottom-[-80px] right-[-80px]"
-        style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.18) 0%, transparent 70%)' } as any} />
-      <Orb className="w-[250px] h-[250px] top-[40%] right-[15%]"
-        style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.12) 0%, transparent 70%)' } as any} />
+      <div className="absolute w-[500px] h-[500px] top-[-100px] left-[-100px] rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle, rgba(109,40,217,0.25) 0%, transparent 70%)', filter: 'blur(80px)' }} />
+      <div className="absolute w-[400px] h-[400px] bottom-[-80px] right-[-80px] rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.18) 0%, transparent 70%)', filter: 'blur(80px)' }} />
+      <div className="absolute w-[250px] h-[250px] top-[40%] right-[15%] rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.12) 0%, transparent 70%)', filter: 'blur(80px)' }} />
 
       {/* Card */}
       <div
