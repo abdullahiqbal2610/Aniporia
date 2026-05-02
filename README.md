@@ -6,10 +6,10 @@ Aniporia is an intelligent academic tutoring platform that uses AI to detect kno
 
 ## 👥 Developers
 
-- **Aaleen Fatima** - Full Stack Development
-- **Abdullah Iqbal** - Backend & AI Integration
-- **Laiba Amjad** - Frontend Development
-- **Mariyam Pasha** - UI/UX Design & Frontend
+- **Aaleen Fatima** 
+- **Abdullah Iqbal** 
+- **Laiba Amjad** 
+- **Mariyam Pasha** 
 
 ## 🌟 Features
 
@@ -151,15 +151,6 @@ Uses Supabase Authentication with:
 - Email/Password registration
 - Session persistence
 - Automatic token refresh
-
-## 📈 Features in Development
-
-- [ ] Video content support
-- [ ] Collaborative learning groups
-- [ ] Advanced analytics dashboard
-- [ ] Offline mode
-- [ ] Mobile app
-
 
 ## 📝 License
 
