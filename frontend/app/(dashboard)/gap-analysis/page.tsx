@@ -8,7 +8,7 @@ import { TopNav } from '../../components/TopNav';
 import { GlassCard } from '../../components/GlassCard';
 import { Button } from '../../components/ui/button';
 import { Progress } from '../../components/ui/progress';
-import { AlertTriangle, TrendingUp, BookOpen, Loader2, ArrowRight } from 'lucide-react';
+import { AlertTriangle, TrendingUp, BookOpen, Loader2, ArrowRight, RefreshCw } from 'lucide-react';
 import { useMastery } from '../../hooks/useMastery';
 import { supabase } from '@/lib/supabase';
 
@@ -28,42 +28,61 @@ export default function GapAnalysisPage() {
   const [loading, setLoading] = useState(true);
   const [selectedGap, setSelectedGap] = useState<Gap | null>(null);
 
-  useEffect(() => {
-    const fetchGaps = async () => {
-      try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const token = sessionData.session?.access_token;
+  const fetchGaps = async () => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
 
-        if (!token) {
-          router.push('/login');
-          return;
-        }
-
-        const response = await fetch('http://localhost:8000/gaps/', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        if (response.ok) {
-          const gapsData = await response.json();
-          setGaps(gapsData);
-          
-          // Select first high priority gap by default
-          const highPriorityGap = gapsData.find((g: Gap) => g.priority === 'HIGH');
-          if (highPriorityGap) {
-            setSelectedGap(highPriorityGap);
-          } else if (gapsData.length > 0) {
-            setSelectedGap(gapsData[0]);
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching gaps:', error);
-      } finally {
-        setLoading(false);
+      if (!token) {
+        router.push('/login');
+        return;
       }
-    };
 
-    fetchGaps();
+      const response = await fetch('http://localhost:8000/gaps/', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (response.ok) {
+        const gapsData = await response.json();
+        setGaps(gapsData);
+        
+        // Select first high priority gap by default
+        const highPriorityGap = gapsData.find((g: Gap) => g.priority === 'HIGH');
+        if (highPriorityGap) {
+          setSelectedGap(highPriorityGap);
+        } else if (gapsData.length > 0) {
+          setSelectedGap(gapsData[0]);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching gaps:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Initial fetch after a slight delay to ensure DB is updated
+    const timer = setTimeout(() => {
+      setLoading(true);
+      fetchGaps();
+    }, 500);
+    
+    return () => clearTimeout(timer);
   }, [router]);
+
+  // Auto-retry if no gaps found (likely still processing)
+  useEffect(() => {
+    if (!loading && gaps.length === 0) {
+      const retryTimer = setTimeout(() => {
+        console.log('No gaps found, retrying...');
+        setLoading(true);
+        fetchGaps();
+      }, 2000);
+      
+      return () => clearTimeout(retryTimer);
+    }
+  }, [loading, gaps.length]);
 
   const handlePractice = () => {
     if (selectedGap) {
@@ -120,7 +139,21 @@ export default function GapAnalysisPage() {
       <TopNav masteryPercentage={mastery} />
       <div className="ml-60 mt-16 p-8">
         <div className="max-w-7xl mx-auto">
-          <h2 className="text-3xl mb-2">Knowledge Gaps</h2>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-3xl">Knowledge Gaps</h2>
+            <Button
+              onClick={() => {
+                setLoading(true);
+                fetchGaps();
+              }}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Refresh
+            </Button>
+          </div>
           <p className="text-muted-foreground mb-8">
             Identify and close your knowledge gaps to improve mastery
           </p>

@@ -121,8 +121,14 @@ export default function UploadPage() {
       clearInterval(stepInterval);
 
       if (!res.ok) {
-        const err = await res.json();
-        toast.error(err.detail || 'Upload failed.');
+        let errorMessage = 'Upload failed.';
+        try {
+          const err = await res.json();
+          errorMessage = err.detail || err.message || `HTTP ${res.status}: ${res.statusText}`;
+        } catch {
+          errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+        }
+        toast.error(errorMessage);
         return;
       }
 

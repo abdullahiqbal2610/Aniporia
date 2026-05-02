@@ -44,7 +44,13 @@ export default function OCRReviewPage() {
       if (uploadResultStr && !uploadId) {
         try {
           const uploadResult = JSON.parse(uploadResultStr);
-          setUploadData(uploadResult);
+          // Normalize the data - backend returns upload_id, convert to id for consistency
+          const normalizedData = {
+            ...uploadResult,
+            id: uploadResult.upload_id || uploadResult.id,
+            course_id: uploadResult.course_id || 'unknown',
+          };
+          setUploadData(normalizedData);
           setImageUrl(uploadResult.file_url);
           
           // Get extracted text from AI result
@@ -96,13 +102,13 @@ export default function OCRReviewPage() {
   }, [uploadId, router]);
 
   const handleSaveText = async () => {
-    if (!uploadData && !uploadId) {
+    const id = uploadData?.id || uploadId;
+    
+    if (!id) {
       toast.error('No upload found');
       router.push('/upload');
       return;
     }
-
-    const id = uploadData?.id || uploadId;
     
     setSaving(true);
     try {
@@ -115,7 +121,7 @@ export default function OCRReviewPage() {
       }
 
       // Save the corrected text using PATCH endpoint
-      const res = await fetch(`http://localhost:8000/uploads/${id}`, {
+      const res = await fetch(`http://localhost:8000/uploads/${id}/text`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -125,8 +131,14 @@ export default function OCRReviewPage() {
       });
 
       if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Save failed');
+        let errorMessage: string;
+        try {
+          const errorData = await res.json();
+          errorMessage = (errorData.detail || errorData.message || `Error: ${res.status}`) as string;
+        } catch {
+          errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+        }
+        throw new Error(errorMessage);
       }
 
       setSaved(true);
@@ -136,12 +148,13 @@ export default function OCRReviewPage() {
       sessionStorage.setItem('current_upload_id', id);
       sessionStorage.setItem('current_course_id', uploadData?.course_id || '');
       
-      setTimeout(() => router.push('/gap-analysis'), 800);
+      // Wait a bit longer to ensure DB is updated
+      setTimeout(() => router.push('/gap-analysis'), 1200);
     } catch (error) {
       console.error('Error saving text:', error);
       toast.error(error instanceof Error ? error.message : 'Could not save text');
-      // Still proceed to gap analysis as fallback
-      setTimeout(() => router.push('/gap-analysis'), 800);
+      // Still proceed to gap analysis as fallback (wait longer for error case)
+      setTimeout(() => router.push('/gap-analysis'), 1500);
     } finally {
       setSaving(false);
     }
