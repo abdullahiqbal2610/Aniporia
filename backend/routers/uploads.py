@@ -2,6 +2,7 @@
 Uploads Router
 --------------
 POST /uploads                     → Upload a note image, run AI pipeline, save results
+POST /uploads/batch               → Upload multiple note images at once (batch pipeline)
 GET  /uploads?course_id=...       → List uploads for a course
 GET  /uploads/{id}                → Get a single upload with its full AI result
 PATCH /uploads/{id}/text          → Save corrected OCR text to DB and re-run gap analysis
@@ -35,6 +36,10 @@ def _save_gaps_and_mastery(supabase, user_id: str, course_id: str, analysis_node
     Shared logic: given a list of analysis_nodes from the AI engine,
     delete old gaps for this course, insert fresh ones, and update mastery.
 
+    Deduplicates by topic name (case-insensitive), keeping the **highest**
+    confidence_score across all pages.  This prevents duplicate gap entries
+    when multiple note pages are analyzed for the same syllabus topics.
+
     Each analysis_node looks like:
         { "topic": "...", "status": "missing|partial|covered",
           "confidence_score": 0-100, "reason": "..." }
@@ -45,10 +50,25 @@ def _save_gaps_and_mastery(supabase, user_id: str, course_id: str, analysis_node
     if not analysis_nodes:
         return 0, 100  # no nodes → no gaps → 100% mastery
 
+    # --- Deduplicate: keep the BEST score per topic ---
+    best_by_topic: dict[str, dict] = {}
+    for item in analysis_nodes:
+        topic_key = item["topic"].strip().lower()
+        score = item.get("confidence_score", 0)
+
+        if topic_key not in best_by_topic or score > best_by_topic[topic_key].get("confidence_score", 0):
+            best_by_topic[topic_key] = item
+
+    unique_nodes = list(best_by_topic.values())
+    print(
+        f"[GAPS] Deduplicated {len(analysis_nodes)} raw nodes → {len(unique_nodes)} unique topics",
+        file=sys.stderr,
+    )
+
     gaps_to_insert = []
     covered_count = 0
 
-    for item in analysis_nodes:
+    for item in unique_nodes:
         score = item.get("confidence_score", 0)
 
         if score >= 80:
@@ -70,7 +90,7 @@ def _save_gaps_and_mastery(supabase, user_id: str, course_id: str, analysis_node
     if gaps_to_insert:
         supabase.table("gaps").insert(gaps_to_insert).execute()
 
-    total = len(analysis_nodes)
+    total = len(unique_nodes)
     mastery = int((covered_count / total) * 100) if total > 0 else 0
     supabase.table("courses").update({"mastery_percent": mastery}).eq("id", course_id).execute()
 
@@ -78,6 +98,141 @@ def _save_gaps_and_mastery(supabase, user_id: str, course_id: str, analysis_node
 
 
 # ---------- Routes ----------
+
+@router.post("/batch", status_code=status.HTTP_201_CREATED)
+async def upload_notes_batch(
+    files: list[UploadFile] = File(...),
+    course_id: str = Form(...),
+    syllabus_topics: str = Form(...),
+    user=Depends(get_current_user),
+):
+    """
+    Batch upload pipeline — accepts multiple images at once.
+    Each file goes through the same pipeline as the single upload:
+    1. Validate → 2. Upload to Storage → 3. AI Pipeline → 4. Save to DB → 5. Save Gaps
+    Returns a list of results (one per file).
+    """
+    supabase = get_supabase()
+
+    if not files or len(files) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files provided.",
+        )
+
+    if len(files) > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 20 files per batch upload.",
+        )
+
+    # Verify course belongs to user
+    course_check = (
+        supabase.table("courses")
+        .select("id")
+        .eq("id", course_id)
+        .eq("user_id", user.id)
+        .single()
+        .execute()
+    )
+    if not course_check.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
+
+    topics_list = [t.strip() for t in syllabus_topics.split(",") if t.strip()]
+    results = []
+    errors = []
+    all_analysis_nodes = []  # Collect nodes from ALL files before saving gaps
+
+    print(f"[BATCH UPLOAD] Received {len(files)} files for course={course_id}", file=sys.stderr)
+    for i, f in enumerate(files):
+        print(f"  [{i}] name={f.filename}, type={f.content_type}, size={f.size}", file=sys.stderr)
+
+    for idx, file in enumerate(files):
+        print(f"[BATCH] Processing file {idx+1}/{len(files)}: {file.filename}", file=sys.stderr)
+        try:
+            # --- 1. Validate ---
+            if file.content_type not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+                errors.append({
+                    "file_name": file.filename,
+                    "index": idx,
+                    "error": "Only PNG, JPEG, and WebP images are supported.",
+                })
+                continue
+
+            image_bytes = await file.read()
+            if len(image_bytes) > MAX_FILE_SIZE:
+                errors.append({
+                    "file_name": file.filename,
+                    "index": idx,
+                    "error": "File exceeds the 10 MB limit.",
+                })
+                continue
+
+            # --- 2. Upload to Storage ---
+            public_url, storage_path = upload_note_image(image_bytes, file.filename, user.id)
+
+            # --- 3. Run AI Pipeline ---
+            ai_result = await run_pipeline_via_http(
+                image_bytes=image_bytes,
+                filename=file.filename,
+                syllabus_topics=topics_list,
+                ai_engine_url=AI_ENGINE_URL,
+            )
+
+            # --- 4. Save Upload record ---
+            extracted_text = ai_result.get("extracted_text", "")
+            upload_result = (
+                supabase.table("uploads")
+                .insert({
+                    "user_id": user.id,
+                    "course_id": course_id,
+                    "file_name": file.filename,
+                    "file_url": public_url,
+                    "content_type": file.content_type,
+                    "extracted_text": extracted_text,
+                })
+                .execute()
+            )
+            upload_id = upload_result.data[0]["id"]
+
+            # --- 5. Collect analysis nodes (DON'T save gaps yet) ---
+            analysis_nodes = ai_result.get("analysis", {}).get("analysis_nodes", [])
+            all_analysis_nodes.extend(analysis_nodes)
+            print(f"[BATCH] File {idx+1} done: upload_id={upload_id}, {len(analysis_nodes)} nodes", file=sys.stderr)
+
+            results.append({
+                "upload_id": upload_id,
+                "file_url": public_url,
+                "file_name": file.filename,
+                "course_id": course_id,
+                "created_at": upload_result.data[0]["created_at"],
+                "ai_result": ai_result,
+            })
+
+        except Exception as e:
+            print(f"[BATCH] File {idx+1} FAILED: {str(e)}", file=sys.stderr)
+            errors.append({
+                "file_name": file.filename,
+                "index": idx,
+                "error": str(e),
+            })
+
+    # --- 6. Save ALL gaps at once (after processing all files) ---
+    # This prevents each file from wiping the previous file's gaps.
+    if results:
+        print(f"[BATCH] Saving {len(all_analysis_nodes)} combined analysis nodes", file=sys.stderr)
+        _save_gaps_and_mastery(supabase, user.id, course_id, all_analysis_nodes)
+
+    print(f"[BATCH UPLOAD] Done: {len(results)} success, {len(errors)} failed", file=sys.stderr)
+
+    return {
+        "total": len(files),
+        "successful": len(results),
+        "failed": len(errors),
+        "results": results,
+        "errors": errors,
+    }
+
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def upload_notes(

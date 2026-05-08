@@ -1,12 +1,12 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '../../components/Sidebar';
 import { TopNav } from '../../components/TopNav';
 import { GlassCard } from '../../components/GlassCard';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
-import { Upload as UploadIcon, File, X, Loader2, Plus } from 'lucide-react';
+import { Upload as UploadIcon, File as FileIcon, X, Loader2, Plus, ImagePlus, CheckCircle2, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 
@@ -17,13 +17,21 @@ interface Course {
   semester: string;
 }
 
+interface FileWithPreview {
+  file: File;
+  id: string;
+  preview: string;
+}
+
 const ACCEPTED_TYPES = 'image/png,image/jpeg,image/jpg,image/webp';
-const FILE_LABEL = 'Supports: JPG, PNG, WebP (max 10MB)';
-const FILE_HINT = 'Upload a photo or scan of your handwritten notes';
+const ACCEPTED_TYPES_LIST = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+const FILE_LABEL = 'Supports: JPG, PNG, WebP (max 10MB each)';
+const FILE_HINT = 'Upload photos or scans of your handwritten notes';
+const MAX_FILES = 20;
 
 const UPLOAD_STEPS = [
-  'Uploading file...',
-  'Processing image...',
+  'Uploading files...',
+  'Processing images...',
   'Extracting text with OCR...',
   'Running AI gap analysis...',
   'Saving results...',
@@ -31,16 +39,19 @@ const UPLOAD_STEPS = [
 
 export default function UploadPage() {
   const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [courses, setCourses] = useState<Course[]>([]);
   const [coursesLoading, setCoursesLoading] = useState(true);
   const [selectedCourseId, setSelectedCourseId] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<FileWithPreview[]>([]);
   const [topicInput, setTopicInput] = useState('');
   const [topics, setTopics] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadStep, setUploadStep] = useState(0);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [currentFileIndex, setCurrentFileIndex] = useState(0);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
     const fetchCourses = async () => {
@@ -61,19 +72,85 @@ export default function UploadPage() {
     fetchCourses();
   }, [router]);
 
+  // Clean up preview URLs on unmount
+  useEffect(() => {
+    return () => {
+      files.forEach((f) => URL.revokeObjectURL(f.preview));
+    };
+  }, [files]);
+
+  const addFiles = useCallback((newFiles: FileList | File[]) => {
+    const incoming = Array.from(newFiles);
+    const validFiles: FileWithPreview[] = [];
+    let rejected = 0;
+
+    for (const file of incoming) {
+      if (!ACCEPTED_TYPES_LIST.includes(file.type)) {
+        rejected++;
+        continue;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error(`${file.name} exceeds 10MB limit.`);
+        continue;
+      }
+      validFiles.push({
+        file,
+        id: `${file.name}-${file.size}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        preview: URL.createObjectURL(file),
+      });
+    }
+
+    if (rejected > 0) {
+      toast.error(`${rejected} file(s) rejected — only JPG, PNG, and WebP images are supported.`);
+    }
+
+    setFiles((prev) => {
+      const combined = [...prev, ...validFiles];
+      if (combined.length > MAX_FILES) {
+        toast.error(`Maximum ${MAX_FILES} files allowed. Some files were not added.`);
+        return combined.slice(0, MAX_FILES);
+      }
+      return combined;
+    });
+  }, []);
+
+  const removeFile = useCallback((id: string) => {
+    setFiles((prev) => {
+      const target = prev.find((f) => f.id === id);
+      if (target) URL.revokeObjectURL(target.preview);
+      return prev.filter((f) => f.id !== id);
+    });
+  }, []);
+
+  const clearAllFiles = useCallback(() => {
+    files.forEach((f) => URL.revokeObjectURL(f.preview));
+    setFiles([]);
+  }, [files]);
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    const dropped = e.dataTransfer.files[0];
-    if (!dropped) return;
-    if (!ACCEPTED_TYPES.split(',').includes(dropped.type)) {
-      toast.error('Only JPG, PNG, and WebP images are supported.');
-      return;
+    setIsDragOver(false);
+    if (e.dataTransfer.files.length > 0) {
+      addFiles(e.dataTransfer.files);
     }
-    setFile(dropped);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) setFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      addFiles(e.target.files);
+      // Reset input so re-selecting same file works
+      e.target.value = '';
+    }
   };
 
   const addTopic = () => {
@@ -87,56 +164,124 @@ export default function UploadPage() {
 
   const handleUpload = async () => {
     if (!selectedCourseId) { toast.error('Please select a course.'); return; }
-    if (!file) { toast.error('Please select a file to upload.'); return; }
+    if (files.length === 0) { toast.error('Please select at least one file to upload.'); return; }
     if (topics.length === 0) { toast.error('Please add at least one syllabus topic.'); return; }
 
     setUploading(true);
     setUploadStep(0);
     setUploadProgress(0);
+    setCurrentFileIndex(0);
 
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
       if (!token) { router.push('/login'); return; }
 
-      const stepInterval = setInterval(() => {
-        setUploadStep((prev) => {
-          const next = prev + 1;
-          setUploadProgress((next / UPLOAD_STEPS.length) * 90);
-          return next < UPLOAD_STEPS.length - 1 ? next : prev;
+      const isBatch = files.length > 1;
+
+      if (isBatch) {
+        // --- BATCH UPLOAD ---
+        const stepInterval = setInterval(() => {
+          setUploadStep((prev) => {
+            const next = prev + 1;
+            setUploadProgress(Math.min((next / UPLOAD_STEPS.length) * 85, 85));
+            return next < UPLOAD_STEPS.length - 1 ? next : prev;
+          });
+        }, 3000);
+
+        const formData = new FormData();
+        console.log(`[BATCH] Appending ${files.length} files to FormData`);
+        files.forEach((f, i) => {
+          console.log(`  [${i}] ${f.file.name} (${f.file.size} bytes, type=${f.file.type})`);
+          formData.append('files', f.file);
         });
-      }, 2500);
+        formData.append('course_id', selectedCourseId);
+        formData.append('syllabus_topics', topics.join(','));
 
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('course_id', selectedCourseId);
-      formData.append('syllabus_topics', topics.join(','));
+        console.log(`[BATCH] Sending to /uploads/batch with ${formData.getAll('files').length} files`);
+        const res = await fetch('http://localhost:8000/uploads/batch', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        });
 
-      const res = await fetch('http://localhost:8000/uploads/', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      });
+        clearInterval(stepInterval);
 
-      clearInterval(stepInterval);
-
-      if (!res.ok) {
-        let errorMessage = 'Upload failed.';
-        try {
-          const err = await res.json();
-          errorMessage = err.detail || err.message || `HTTP ${res.status}: ${res.statusText}`;
-        } catch {
-          errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+        if (!res.ok) {
+          let errorMessage = 'Upload failed.';
+          try {
+            const err = await res.json();
+            errorMessage = err.detail || err.message || `HTTP ${res.status}: ${res.statusText}`;
+          } catch {
+            errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+          }
+          toast.error(errorMessage);
+          return;
         }
-        toast.error(errorMessage);
-        return;
-      }
 
-      const result = await res.json();
-      setUploadProgress(100);
-      toast.success('Upload complete!');
-      sessionStorage.setItem('upload_result', JSON.stringify(result));
-      setTimeout(() => router.push('/ocr-review'), 800);
+        const batchResult = await res.json();
+        console.log('[BATCH] Response from backend:', {
+          total: batchResult.total,
+          successful: batchResult.successful,
+          failed: batchResult.failed,
+          resultCount: batchResult.results?.length,
+          errorCount: batchResult.errors?.length,
+        });
+        setUploadProgress(100);
+
+        if (batchResult.failed > 0) {
+          toast.warning(`${batchResult.successful} of ${batchResult.total} files uploaded. ${batchResult.failed} failed.`);
+        } else {
+          toast.success(`All ${batchResult.successful} files uploaded successfully!`);
+        }
+
+        // Store batch results for OCR review
+        sessionStorage.setItem('upload_result_batch', JSON.stringify(batchResult));
+        sessionStorage.removeItem('upload_result');
+        setTimeout(() => router.push('/ocr-review'), 800);
+
+      } else {
+        // --- SINGLE FILE UPLOAD (original behavior) ---
+        const stepInterval = setInterval(() => {
+          setUploadStep((prev) => {
+            const next = prev + 1;
+            setUploadProgress((next / UPLOAD_STEPS.length) * 90);
+            return next < UPLOAD_STEPS.length - 1 ? next : prev;
+          });
+        }, 2500);
+
+        const formData = new FormData();
+        formData.append('file', files[0].file);
+        formData.append('course_id', selectedCourseId);
+        formData.append('syllabus_topics', topics.join(','));
+
+        const res = await fetch('http://localhost:8000/uploads/', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        });
+
+        clearInterval(stepInterval);
+
+        if (!res.ok) {
+          let errorMessage = 'Upload failed.';
+          try {
+            const err = await res.json();
+            errorMessage = err.detail || err.message || `HTTP ${res.status}: ${res.statusText}`;
+          } catch {
+            errorMessage = `HTTP ${res.status}: ${res.statusText}`;
+          }
+          toast.error(errorMessage);
+          return;
+        }
+
+        const result = await res.json();
+        setUploadProgress(100);
+        toast.success('Upload complete!');
+        sessionStorage.setItem('upload_result', JSON.stringify(result));
+        sessionStorage.removeItem('upload_result_batch');
+        setTimeout(() => router.push('/ocr-review'), 800);
+      }
     } catch {
       toast.error('Something went wrong. Please try again.');
     } finally {
@@ -212,48 +357,116 @@ export default function UploadPage() {
               )}
             </GlassCard>
 
-            {/* 3. Upload File */}
+            {/* 3. Upload Files (Multi-upload) */}
             <GlassCard>
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xl">3. Upload File</h3>
-                <span className="text-xs text-muted-foreground bg-accent px-3 py-1 rounded-full border border-border">
-                  {FILE_LABEL}
-                </span>
+                <h3 className="text-xl">3. Upload Files</h3>
+                <div className="flex items-center gap-3">
+                  {files.length > 0 && (
+                    <span className="text-sm font-medium text-primary bg-primary/10 px-3 py-1 rounded-full border border-primary/30">
+                      {files.length} file{files.length !== 1 ? 's' : ''} selected
+                    </span>
+                  )}
+                  <span className="text-xs text-muted-foreground bg-accent px-3 py-1 rounded-full border border-border">
+                    {FILE_LABEL}
+                  </span>
+                </div>
               </div>
-              <div onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}
-                className="border-2 border-dashed border-primary/50 rounded-lg p-12 text-center hover:bg-primary/5 transition-all">
-                <UploadIcon className="w-12 h-12 mx-auto mb-4 text-primary" />
-                <p className="text-lg mb-1">Drag and drop a file here</p>
-                <p className="text-sm text-muted-foreground mb-4">{FILE_HINT}</p>
+
+              {/* Drop Zone */}
+              <div
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                className={`border-2 border-dashed rounded-lg p-12 text-center transition-all duration-200 ${
+                  isDragOver
+                    ? 'border-primary bg-primary/10 scale-[1.01]'
+                    : 'border-primary/50 hover:bg-primary/5'
+                }`}
+              >
+                <UploadIcon className={`w-12 h-12 mx-auto mb-4 transition-transform duration-200 ${
+                  isDragOver ? 'text-primary scale-110' : 'text-primary'
+                }`} />
+                <p className="text-lg mb-1">Drag and drop files here</p>
+                <p className="text-sm text-muted-foreground mb-1">{FILE_HINT}</p>
+                <p className="text-xs text-muted-foreground mb-4">
+                  You can select <strong>multiple files</strong> at once (up to {MAX_FILES})
+                </p>
                 <label className="inline-block cursor-pointer">
-                  <input type="file" onChange={handleFileSelect} className="hidden" accept={ACCEPTED_TYPES} />
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                    accept={ACCEPTED_TYPES}
+                    multiple
+                  />
                   <Button variant="outline" className="border-primary/50 text-primary hover:bg-primary/10" asChild>
-                    <span>Browse Files</span>
+                    <span><ImagePlus className="w-4 h-4 mr-2" />Browse Files</span>
                   </Button>
                 </label>
               </div>
 
-              {file && (
-                <div className="mt-4 flex items-center justify-between p-4 rounded-lg bg-accent border border-border">
-                  <div className="flex items-center gap-3">
-                    <File className="w-6 h-6 text-primary" />
-                    <div>
-                      <p className="font-medium text-sm">{file.name}</p>
-                      <p className="text-xs text-muted-foreground">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
-                    </div>
+              {/* File Thumbnails Grid */}
+              {files.length > 0 && (
+                <div className="mt-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-sm font-medium text-muted-foreground">
+                      Selected files ({files.length}/{MAX_FILES})
+                    </p>
+                    <button
+                      onClick={clearAllFiles}
+                      className="text-xs text-destructive hover:text-destructive/80 transition-colors underline underline-offset-2"
+                    >
+                      Clear all
+                    </button>
                   </div>
-                  <button onClick={() => setFile(null)} className="p-1 hover:bg-destructive/20 rounded transition-colors">
-                    <X className="w-4 h-4 text-destructive" />
-                  </button>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    {files.map((f) => (
+                      <div
+                        key={f.id}
+                        className="group relative rounded-xl overflow-hidden border border-border bg-accent/50 aspect-square transition-all hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5"
+                      >
+                        <img
+                          src={f.preview}
+                          alt={f.file.name}
+                          className="w-full h-full object-cover"
+                        />
+                        {/* Overlay with filename */}
+                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-2 pt-6">
+                          <p className="text-xs text-white truncate font-medium">{f.file.name}</p>
+                          <p className="text-[10px] text-white/60">{(f.file.size / 1024 / 1024).toFixed(2)} MB</p>
+                        </div>
+                        {/* Remove button */}
+                        <button
+                          onClick={() => removeFile(f.id)}
+                          className="absolute top-1.5 right-1.5 p-1 rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-destructive"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+
+                    {/* Add more button */}
+                    {files.length < MAX_FILES && (
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="aspect-square rounded-xl border-2 border-dashed border-border hover:border-primary/50 flex flex-col items-center justify-center gap-2 text-muted-foreground hover:text-primary transition-all hover:bg-primary/5"
+                      >
+                        <Plus className="w-6 h-6" />
+                        <span className="text-xs font-medium">Add more</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </GlassCard>
 
-            <Button onClick={handleUpload} disabled={!selectedCourseId || !file || topics.length === 0 || uploading}
+            <Button onClick={handleUpload} disabled={!selectedCourseId || files.length === 0 || topics.length === 0 || uploading}
               className="w-full h-12 bg-primary hover:bg-primary/90 disabled:opacity-50 text-lg">
               {uploading
                 ? <><Loader2 className="w-5 h-5 mr-2 animate-spin" />{UPLOAD_STEPS[uploadStep]}</>
-                : <><UploadIcon className="w-5 h-5 mr-2" />Upload & Analyze</>}
+                : <><UploadIcon className="w-5 h-5 mr-2" />Upload {files.length > 1 ? `${files.length} Files` : ''} & Analyze</>}
             </Button>
 
           </div>
@@ -265,8 +478,15 @@ export default function UploadPage() {
         <div className="fixed inset-0 bg-background/90 backdrop-blur-sm flex items-center justify-center z-50">
           <GlassCard className="max-w-md w-full text-center p-8">
             <Loader2 className="w-16 h-16 mx-auto mb-4 animate-spin text-primary" />
-            <h3 className="text-2xl mb-2">Analyzing Your Notes</h3>
-            <p className="text-muted-foreground mb-6">{UPLOAD_STEPS[uploadStep]}</p>
+            <h3 className="text-2xl mb-2">
+              {files.length > 1 ? 'Analyzing Your Notes' : 'Analyzing Your Notes'}
+            </h3>
+            <p className="text-muted-foreground mb-2">{UPLOAD_STEPS[uploadStep]}</p>
+            {files.length > 1 && (
+              <p className="text-sm text-primary mb-4">
+                Processing {files.length} files
+              </p>
+            )}
             <div className="w-full bg-accent rounded-full h-2 mb-2">
               <div className="bg-primary h-2 rounded-full transition-all duration-500" style={{ width: `${uploadProgress}%` }} />
             </div>
