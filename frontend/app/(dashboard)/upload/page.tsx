@@ -9,6 +9,7 @@ import { Input } from '../../components/ui/input';
 import { Upload as UploadIcon, File as FileIcon, X, Loader2, Plus, ImagePlus, CheckCircle2, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import { useMastery } from '../../hooks/useMastery';
 
 interface Course {
   id: string;
@@ -39,6 +40,7 @@ const UPLOAD_STEPS = [
 
 export default function UploadPage() {
   const router = useRouter();
+  const { mastery: overallMastery, loading: masteryLoading } = useMastery();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [courses, setCourses] = useState<Course[]>([]);
@@ -292,7 +294,7 @@ export default function UploadPage() {
   return (
     <div className="min-h-screen bg-background">
       <Sidebar currentPage="upload" onNavigate={(page) => router.push(`/${page}`)} />
-      <TopNav masteryPercentage={0} />
+      <TopNav masteryPercentage={masteryLoading ? 0 : overallMastery} />
       <div className="ml-60 mt-16 p-8">
         <div className="max-w-5xl mx-auto">
           <h2 className="text-3xl mb-8">Upload Learning Material</h2>

@@ -1,4 +1,4 @@
-# backend/routers/practice.py - Complete updated version with mock fallback
+# backend/routers/practice.py - Fixed version
 
 """
 Practice Router
@@ -14,6 +14,7 @@ GET  /practice/stats               → Aggregated stats (avg score, improvement,
 import os
 import httpx
 import time
+import json
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from services.supabase_client import get_supabase
@@ -55,7 +56,7 @@ def get_mock_quiz(topic: str):
     """Return mock quiz data when AI engine is unavailable"""
     return {
         "node_topic": topic,
-        "lesson": f"This is a crash course on {topic}. The key concepts include understanding the fundamentals, practical applications, and common use cases.",
+        "lesson": f"This is a crash course on {topic}.",
         "quiz": [
             {
                 "question": f"What is the fundamental concept of {topic}?",
@@ -66,10 +67,10 @@ def get_mock_quiz(topic: str):
                     "Future predictions"
                 ],
                 "correct_answer": "Basic principles and theories",
-                "explanation": f"The fundamental concept of {topic} starts with understanding the basic principles and theories that form its foundation."
+                "explanation": f"The fundamental concept of {topic} starts with understanding the basic principles."
             },
             {
-                "question": f"Which of the following is most important when learning {topic}?",
+                "question": f"Which is most important when learning {topic}?",
                 "options": [
                     "Memorizing all facts",
                     "Understanding core concepts",
@@ -77,7 +78,7 @@ def get_mock_quiz(topic: str):
                     "Skipping basics"
                 ],
                 "correct_answer": "Understanding core concepts",
-                "explanation": "Understanding core concepts is crucial as it provides the foundation for advanced topics."
+                "explanation": "Understanding core concepts provides the foundation for advanced topics."
             },
             {
                 "question": f"What is the best approach to master {topic}?",
@@ -88,7 +89,7 @@ def get_mock_quiz(topic: str):
                     "Avoiding practical exercises"
                 ],
                 "correct_answer": "Regular practice and application",
-                "explanation": "Regular practice and real-world application help reinforce learning and identify knowledge gaps."
+                "explanation": "Regular practice and real-world application help reinforce learning."
             }
         ]
     }
@@ -114,19 +115,14 @@ def _update_gaps_and_mastery(supabase, user_id: str, results: list[TopicResult])
     1. Update each gap's gap_score based on practice performance.
     2. Recalculate and update mastery_percent for affected courses.
     """
-    print(f"[DEBUG] Updating gaps for user {user_id} with results: {results}")
-    
     if not results:
-        print("[DEBUG] No results to process")
         return
 
     affected_courses = set()
 
     for result in results:
         accuracy = (result.correct / result.total * 100) if result.total > 0 else 0
-        print(f"[DEBUG] Topic: {result.topic}, Accuracy: {accuracy}%")
 
-        # Find the gap(s) matching this topic for this user
         gaps = (
             supabase.table("gaps")
             .select("id, gap_score, course_id, priority")
@@ -134,8 +130,6 @@ def _update_gaps_and_mastery(supabase, user_id: str, results: list[TopicResult])
             .ilike("topic", f"%{result.topic}%")
             .execute()
         ).data or []
-        
-        print(f"[DEBUG] Found {len(gaps)} gaps for topic {result.topic}")
 
         for gap in gaps:
             old_score = gap.get("gap_score", 0)
@@ -148,16 +142,13 @@ def _update_gaps_and_mastery(supabase, user_id: str, results: list[TopicResult])
             else:
                 new_priority = "HIGH"
 
-            print(f"[DEBUG] Updating gap {gap['id']}: old_score={old_score}, new_score={new_score}, priority={new_priority}")
-            
             supabase.table("gaps").update({
                 "gap_score": new_score,
                 "priority": new_priority,
             }).eq("id", gap["id"]).execute()
-            
+
             affected_courses.add(gap["course_id"])
 
-    # Now recalculate mastery for all affected courses
     for course_id in affected_courses:
         course_gaps = (
             supabase.table("gaps")
@@ -166,12 +157,10 @@ def _update_gaps_and_mastery(supabase, user_id: str, results: list[TopicResult])
             .eq("course_id", course_id)
             .execute()
         ).data or []
-        
+
         if course_gaps:
             scores = [g.get("gap_score", 0) for g in course_gaps]
             avg_mastery = round(sum(scores) / len(scores))
-            print(f"[DEBUG] Updating course {course_id}: avg_mastery={avg_mastery} from {len(scores)} gaps")
-            
             supabase.table("courses").update({
                 "mastery_percent": avg_mastery
             }).eq("id", course_id).eq("user_id", user_id).execute()
@@ -182,10 +171,9 @@ def _update_gaps_and_mastery(supabase, user_id: str, results: list[TopicResult])
 @router.post("/generate")
 async def generate_questions(body: GenerateRequest, user=Depends(get_current_user)):
     """
-    Calls the AI engine's /api/learn-node endpoint to get a lesson + 3-question quiz
-    for the given topic. Falls back to mock data if AI engine fails.
+    Calls the AI engine's /api/learn-node endpoint to get a lesson + 3-question quiz.
+    Falls back to mock data if AI engine fails.
     """
-    # Try AI engine first
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
@@ -195,22 +183,13 @@ async def generate_questions(body: GenerateRequest, user=Depends(get_current_use
                     "previous_questions": body.previous_questions or [],
                 },
             )
-            
             if response.status_code == 200:
                 data = response.json()
-                # Check if we got valid data
                 if data and data.get("quiz") and len(data.get("quiz", [])) > 0:
-                    print(f"[DEBUG] Using AI-generated quiz for {body.topic}")
                     return data
-                else:
-                    print(f"[DEBUG] AI returned empty/invalid data, using mock fallback")
-            else:
-                print(f"[DEBUG] AI returned status {response.status_code}, using mock fallback")
     except Exception as e:
         print(f"[DEBUG] AI engine error: {e}, using mock fallback")
-    
-    # Fallback to mock data
-    print(f"[DEBUG] Using mock quiz data for topic: {body.topic}")
+
     return get_mock_quiz(body.topic)
 
 
@@ -218,11 +197,7 @@ async def generate_questions(body: GenerateRequest, user=Depends(get_current_use
 async def complete_session(body: CompleteSessionRequest, user=Depends(get_current_user)):
     """
     Called when a practice session ends.
-    1. Computes the real score_after from results.
-    2. Picks a badge.
-    3. Saves to DB.
-    4. Updates gap scores and course mastery percentages.
-    Returns everything the feedback page needs.
+    Computes score, saves session + topic results, updates gaps & mastery.
     """
     supabase = get_supabase()
 
@@ -232,8 +207,6 @@ async def complete_session(body: CompleteSessionRequest, user=Depends(get_curren
 
     improvement = score_after - body.score_before
     badge = _compute_badge(improvement, score_after)
-
-    print(f"[DEBUG] Session complete: before={body.score_before}, after={score_after}, improvement={improvement}, badge={badge}")
 
     session_result = (
         supabase.table("practice_sessions")
@@ -253,7 +226,6 @@ async def complete_session(body: CompleteSessionRequest, user=Depends(get_curren
         )
 
     session_id = session_result.data[0]["id"]
-    print(f"[DEBUG] Saved session {session_id}")
 
     if body.results:
         topic_rows = [
@@ -266,7 +238,6 @@ async def complete_session(body: CompleteSessionRequest, user=Depends(get_curren
             for r in body.results
         ]
         supabase.table("practice_results").insert(topic_rows).execute()
-        print(f"[DEBUG] Saved {len(topic_rows)} topic results")
 
     _update_gaps_and_mastery(supabase, user.id, body.results)
 
@@ -329,7 +300,6 @@ async def save_session(body: PracticeSessionCreate, user=Depends(get_current_use
 async def list_sessions(user=Depends(get_current_user)):
     """Returns all practice sessions for the user, newest first."""
     supabase = get_supabase()
-
     result = (
         supabase.table("practice_sessions")
         .select("*")
@@ -337,7 +307,6 @@ async def list_sessions(user=Depends(get_current_user)):
         .order("completed_at", desc=True)
         .execute()
     )
-
     return result.data or []
 
 
@@ -402,42 +371,32 @@ async def get_stats(user=Depends(get_current_user)):
 
 # ---------- Mock Exam Routes ----------
 
-class MockExamQuestion(BaseModel):
-    id: int
-    question: str
-    options: list[str]
-    correct_answer: int  # index of correct option
-
-
 class MockExamRequest(BaseModel):
-    """Request to start a mock exam"""
     pass
 
 
 class MockExamSubmitRequest(BaseModel):
-    """Submit mock exam answers"""
-    answers: dict[int, int]  # question_id -> selected_option_index
+    answers: dict[int, str]  # question_id -> selected_answer string
+    questions: list[dict]    # full question list with correct_answer for server-side scoring
 
 
 @router.get("/mock-exam/status", response_model=dict)
 async def mock_exam_status(user=Depends(get_current_user)):
-    """Check if user is eligible for mock exam and get current score/gaps"""
+    """Check eligibility and get current mastery/gaps for mock exam."""
     supabase = get_supabase()
-    
-    # Get user's courses and calculate overall mastery
+
     courses = (
         supabase.table("courses")
         .select("mastery_percent")
         .eq("user_id", user.id)
         .execute()
     ).data or []
-    
-    if not courses:
-        current_mastery = 0
-    else:
-        current_mastery = round(sum(c["mastery_percent"] for c in courses) / len(courses))
-    
-    # Get gaps
+
+    current_mastery = (
+        round(sum(c["mastery_percent"] for c in courses) / len(courses))
+        if courses else 0
+    )
+
     gaps = (
         supabase.table("gaps")
         .select("topic, priority")
@@ -445,7 +404,7 @@ async def mock_exam_status(user=Depends(get_current_user)):
         .eq("priority", "HIGH")
         .execute()
     ).data or []
-    
+
     return {
         "current_mastery": current_mastery,
         "required_mastery": 0,
@@ -457,67 +416,186 @@ async def mock_exam_status(user=Depends(get_current_user)):
 
 @router.post("/mock-exam/start")
 async def start_mock_exam(body: MockExamRequest, user=Depends(get_current_user)):
-    """Generate a new mock exam with 50 questions"""
-    
-    # Create mock exam questions (50 questions across different topics)
-    topics = [
-        "Data Structures", "Algorithms", "Database Design", "System Design",
-        "Operating Systems", "Networking", "Web Development", "Machine Learning",
-        "Software Engineering", "Security"
-    ]
-    
-    questions = []
+    """
+    Generate a 50-question AI mock exam using the user's actual gap topics.
+    Falls back to generic questions if AI engine is unavailable.
+    """
+    supabase = get_supabase()
+
+    # Fetch user's actual gap topics
+    gaps_result = (
+        supabase.table("gaps")
+        .select("topic, priority")
+        .eq("user_id", user.id)
+        .order("priority", desc=False)  # HIGH first
+        .execute()
+    ).data or []
+
+    gap_topics = [g["topic"] for g in gaps_result]
+
+    # Also fetch courses for additional context
+    courses_result = (
+        supabase.table("courses")
+        .select("name")
+        .eq("user_id", user.id)
+        .execute()
+    ).data or []
+
+    # If no gaps found, use course names as topics
+    if not gap_topics:
+        gap_topics = [c["name"] for c in courses_result]
+
+    # Fallback if still empty
+    if not gap_topics:
+        gap_topics = ["General Knowledge", "Core Concepts", "Applied Theory"]
+
+    all_questions = []
     question_id = 1
+
+    # Try to generate AI questions for each topic
+    questions_per_topic = max(3, 50 // len(gap_topics)) if gap_topics else 5
     
-    for i, topic in enumerate(topics):
-        for j in range(5):  # 5 questions per topic
-            questions.append(MockExamQuestion(
-                id=question_id,
-                question=f"Question {question_id}: What is an important concept in {topic}?",
-                options=[
-                    f"{topic} concept A",
-                    f"{topic} concept B",
-                    f"{topic} concept C",
-                    f"{topic} concept D",
-                ],
-                correct_answer=j % 4
-            ))
+    for topic in gap_topics:
+        if question_id > 50:
+            break
+        
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    f"{AI_ENGINE_URL}/api/learn-node",
+                    json={
+                        "topic": topic,
+                        "previous_questions": [],
+                    },
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    quiz_items = data.get("quiz", [])
+                    for q in quiz_items:
+                        if question_id > 50:
+                            break
+                        all_questions.append({
+                            "id": question_id,
+                            "topic": topic,
+                            "question": q.get("question", f"Question about {topic}"),
+                            "options": q.get("options", []),
+                            "correct_answer": q.get("correct_answer", ""),
+                            "explanation": q.get("explanation", ""),
+                        })
+                        question_id += 1
+                    continue
+        except Exception as e:
+            print(f"[MOCK EXAM] AI failed for topic '{topic}': {e}")
+
+        # Fallback: generate generic questions for this topic
+        mock = get_mock_quiz(topic)
+        for q in mock["quiz"]:
+            if question_id > 50:
+                break
+            all_questions.append({
+                "id": question_id,
+                "topic": topic,
+                "question": q["question"],
+                "options": q["options"],
+                "correct_answer": q["correct_answer"],
+                "explanation": q["explanation"],
+            })
             question_id += 1
-    
+
+    # Pad to 50 if needed with generic questions
+    while len(all_questions) < 50:
+        topic = gap_topics[len(all_questions) % len(gap_topics)]
+        mock = get_mock_quiz(topic)
+        for q in mock["quiz"]:
+            if len(all_questions) >= 50:
+                break
+            all_questions.append({
+                "id": len(all_questions) + 1,
+                "topic": topic,
+                "question": q["question"],
+                "options": q["options"],
+                "correct_answer": q["correct_answer"],
+                "explanation": q["explanation"],
+            })
+
     return {
         "exam_id": f"mock_{user.id}_{int(time.time())}",
-        "total_questions": len(questions),
-        "questions": [q.model_dump() for q in questions],
+        "total_questions": len(all_questions),
+        "questions": all_questions,
         "time_limit_minutes": 120,
     }
 
 
 @router.post("/mock-exam/submit")
 async def submit_mock_exam(body: MockExamSubmitRequest, user=Depends(get_current_user)):
-    """Submit mock exam answers and get results"""
-    
-    # For now, calculate score based on submitted answers
-    # In production, you'd verify against actual correct answers
-    total = len(body.answers)
-    correct = sum(1 for v in body.answers.values() if v == 0)  # Simplified: answer 0 is always correct
-    
-    score = round((correct / total) * 100) if total > 0 else 0
-    
+    """
+    Submit mock exam answers and get results.
+    Scores against the actual correct_answer strings from the question list.
+    """
     supabase = get_supabase()
-    
-    # Save mock exam result
-    result = supabase.table("practice_sessions").insert({
+
+    # Build a lookup of question_id -> correct_answer from submitted question list
+    correct_map: dict[int, str] = {}
+    for q in body.questions:
+        qid = q.get("id")
+        if qid is not None:
+            correct_map[int(qid)] = q.get("correct_answer", "")
+
+    total = len(body.answers)
+    correct = 0
+    topic_results: dict[str, dict] = {}
+
+    for q in body.questions:
+        qid = int(q.get("id", 0))
+        topic = q.get("topic", "General")
+        selected = body.answers.get(qid)
+        is_correct = selected is not None and selected == correct_map.get(qid, "")
+
+        if topic not in topic_results:
+            topic_results[topic] = {"correct": 0, "total": 0}
+        topic_results[topic]["total"] += 1
+        if is_correct:
+            topic_results[topic]["correct"] += 1
+            correct += 1
+
+    score = round((correct / total) * 100) if total > 0 else 0
+    badge = _compute_badge(score, score)
+
+    # Save to DB (no exam_type column — use standard practice_sessions)
+    session_result = supabase.table("practice_sessions").insert({
         "user_id": user.id,
         "score_before": 0,
         "score_after": score,
-        "badge": _compute_badge(score, score),
-        "exam_type": "mock",
+        "badge": badge,
     }).execute()
-    
+
+    session_id = session_result.data[0]["id"] if session_result.data else None
+
+    # Save per-topic results
+    if session_id and topic_results:
+        topic_rows = [
+            {
+                "session_id": session_id,
+                "topic": topic,
+                "correct": vals["correct"],
+                "total": vals["total"],
+            }
+            for topic, vals in topic_results.items()
+        ]
+        supabase.table("practice_results").insert(topic_rows).execute()
+
+        # Update gaps/mastery based on performance
+        results_list = [
+            TopicResult(topic=t, correct=v["correct"], total=v["total"])
+            for t, v in topic_results.items()
+        ]
+        _update_gaps_and_mastery(supabase, user.id, results_list)
+
     return {
         "score": score,
         "correct": correct,
         "total": total,
         "passed": score >= 70,
-        "badge": _compute_badge(score, score),
+        "badge": badge,
+        "topic_breakdown": topic_results,
     }

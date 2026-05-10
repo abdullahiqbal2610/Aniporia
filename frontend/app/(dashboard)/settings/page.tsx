@@ -14,6 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Sun, Moon, Eye, Keyboard, Palette, User, Lock, Trash2, X, Loader2, Plus, Pencil, Check } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import { useMastery } from '../../hooks/useMastery';
 
 interface Course {
   id: string;
@@ -32,8 +33,8 @@ interface Profile {
 
 export default function SettingsPage() {
   const router = useRouter();
-
-  // Profile
+ 
+ const { mastery: overallMastery, loading: masteryLoading } = useMastery();
   const [profile, setProfile] = useState<Profile>({ full_name: '', contact_number: '', institution: '', graduation_year: '', academic_level: '' });
   const [profileLoading, setProfileLoading] = useState(true);
   const [editingProfile, setEditingProfile] = useState(false);
@@ -222,7 +223,7 @@ export default function SettingsPage() {
   return (
     <div className="min-h-screen bg-background">
       <Sidebar currentPage="settings" onNavigate={(page) => router.push(`/${page}`)} />
-      <TopNav masteryPercentage={0} />
+      <TopNav masteryPercentage={masteryLoading ? 0 : overallMastery} />
       <div className="ml-60 mt-16 p-8">
         <div className="max-w-4xl mx-auto">
           <h2 className="text-3xl mb-8">Settings</h2>

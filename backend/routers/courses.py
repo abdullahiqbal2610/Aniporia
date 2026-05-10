@@ -1,10 +1,11 @@
 """
 Courses Router
 --------------
-GET    /courses              → List all courses for the current user
-POST   /courses              → Create a new course
-PATCH  /courses/{id}         → Update course name / code / semester
-DELETE /courses/{id}         → Delete a course
+GET    /courses                  → List all courses for the current user
+GET    /courses/with-topics      → List courses with nested topics/gaps and individual mastery
+POST   /courses                  → Create a new course
+PATCH  /courses/{id}             → Update course name / code / semester
+DELETE /courses/{id}             → Delete a course
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -42,19 +43,82 @@ class CourseResponse(BaseModel):
 # ---------- Helper ----------
 
 def ensure_profile_exists(supabase, user_id: str):
-    """
-    Guarantees a profile row exists for this user before any FK-dependent insert.
-    Uses upsert so it's a no-op if the profile already exists.
-    This handles existing Supabase Auth users who skipped the onboarding flow.
-    """
     supabase.table("profiles").upsert(
         {"id": user_id},
         on_conflict="id",
-        ignore_duplicates=True,   # don't overwrite existing profile data
+        ignore_duplicates=True,
     ).execute()
 
 
 # ---------- Routes ----------
+
+@router.get("/with-topics")
+async def list_courses_with_topics(user=Depends(get_current_user)):
+    """
+    Returns all courses for the user with their individual topics/gaps nested inside.
+    Each topic includes: topic name, gap_score (mastery), priority.
+    Overall mastery per course is the average of all its topic gap_scores.
+    """
+    supabase = get_supabase()
+
+    # Fetch all courses
+    courses_result = (
+        supabase.table("courses")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    courses = courses_result.data or []
+
+    # Fetch all gaps for this user (with course info)
+    gaps_result = (
+        supabase.table("gaps")
+        .select("id, topic, gap_score, priority, course_id")
+        .eq("user_id", user.id)
+        .order("gap_score", desc=False)  # lowest mastery first
+        .execute()
+    )
+    gaps = gaps_result.data or []
+
+    # Group gaps by course_id
+    gaps_by_course: dict[str, list] = {}
+    for gap in gaps:
+        cid = gap["course_id"]
+        if cid not in gaps_by_course:
+            gaps_by_course[cid] = []
+        gaps_by_course[cid].append({
+            "id": gap["id"],
+            "topic": gap["topic"],
+            "gap_score": gap.get("gap_score", 0),
+            "priority": gap.get("priority", "MEDIUM"),
+        })
+
+    # Build response: each course with its topics nested
+    result = []
+    for course in courses:
+        course_topics = gaps_by_course.get(course["id"], [])
+
+        # Recalculate mastery from topics if available, else use stored value
+        if course_topics:
+            avg_mastery = round(
+                sum(t["gap_score"] for t in course_topics) / len(course_topics)
+            )
+        else:
+            avg_mastery = course.get("mastery_percent", 0)
+
+        result.append({
+            **course,
+            "mastery_percent": avg_mastery,
+            "topics": course_topics,
+            "topic_count": len(course_topics),
+            "mastered_count": sum(1 for t in course_topics if t["gap_score"] >= 80),
+            "partial_count": sum(1 for t in course_topics if 40 <= t["gap_score"] < 80),
+            "gap_count": sum(1 for t in course_topics if t["gap_score"] < 40),
+        })
+
+    return result
+
 
 @router.get("/", response_model=list[CourseResponse])
 async def list_courses(user=Depends(get_current_user)):
@@ -77,8 +141,6 @@ async def create_course(body: CourseCreate, user=Depends(get_current_user)):
     """Creates a new course for the authenticated user."""
     supabase = get_supabase()
 
-    # Ensure a profile row exists — prevents FK violation for users who
-    # authenticated directly without completing the onboarding profile step.
     ensure_profile_exists(supabase, user.id)
 
     result = (
