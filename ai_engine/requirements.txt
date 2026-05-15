@@ -1,25 +1,24 @@
 # Tells pip where to find the Windows CPU version of PyTorch so it doesn't crash
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Core AI & Math Libraries
+# Core AI & ML Libraries
 torch
 torchvision
 transformers
-pillow==11.1.0
-sentence-transformers==3.4.1
+pillow>=11.1.0
 numpy>=1.24.0
 opencv-python>=4.8.0
 
-# Fast PDF Text Extraction (The Digital Router)
+# Fast PDF Text Extraction
 pymupdf>=1.23.0
 
-# Optical Character Recognition (The Eyes)
+# Optical Character Recognition
 easyocr==1.7.2
 
-# Generative AI (The Mouth)
+# Generative AI (Gemini)
 google-generativeai==0.8.4
 
-# Backend Web Server (The API Bridge)
+# Backend Web Server
 fastapi==0.115.8
 uvicorn==0.34.0
 python-multipart==0.0.20
